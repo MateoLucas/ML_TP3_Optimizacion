@@ -1,0 +1,5 @@
+| chequeo                                             | resultado    |
+|:----------------------------------------------------|:-------------|
+| total_processes == primary + auxiliary + background | True         |
+| total_gpu_hours == peak + offpeak                   | True         |
+| high_value_client: costo/h medio (0 vs 1)           | 4.55 vs 7.56 |

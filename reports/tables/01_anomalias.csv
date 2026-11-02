@@ -1,0 +1,7 @@
+anomalía,filas,tasa_cancelación
+total_processes == 0 (workload sin procesos),108,0.10185185185185185
+num_primary_processes == 0,239,0.23430962343096234
+total_gpu_hours == 0 (reserva de 0 horas),193,0.06217616580310881
+estimated_cost_per_hour == 0,727,0.10866574965612105
+estimated_cost_per_hour > 20 (outlier extremo),2,0.5
+client_type / request_channel == 'unknown',1,1.0

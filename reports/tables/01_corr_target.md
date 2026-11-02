@@ -1,0 +1,23 @@
+| feature                    |   spearman_vs_target |
+|:---------------------------|---------------------:|
+| special_resource_requests  |              -0.3161 |
+| hours_before_execution     |               0.3030 |
+| previous_job_cancellations |               0.2679 |
+| resource_modifications     |              -0.1909 |
+| reserved_storage_units     |              -0.1325 |
+| queue_wait_time            |               0.1119 |
+| successful_previous_jobs   |              -0.1001 |
+| returning_client           |              -0.0731 |
+| offpeak_gpu_hours          |               0.0583 |
+| high_value_client          |              -0.0536 |
+| num_primary_processes      |               0.0443 |
+| num_background_processes   |              -0.0343 |
+| num_auxiliary_processes    |              -0.0330 |
+| peak_gpu_hours             |              -0.0290 |
+| total_gpu_hours            |               0.0270 |
+| estimated_cost_per_hour    |              -0.0262 |
+| total_processes            |               0.0220 |
+| execution_year             |               0.0120 |
+| execution_day              |              -0.0075 |
+| execution_week             |              -0.0072 |
+| execution_month            |              -0.0044 |

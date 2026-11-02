@@ -27,7 +27,7 @@ def setup():
         "axes.edgecolor": GRID,
         "axes.labelcolor": TEXT2,
         "axes.titlecolor": TEXT,
-        "axes.titleweight": "semibold",
+        "axes.titleweight": "bold",
         "axes.titlesize": 11,
         "axes.labelsize": 9.5,
         "axes.grid": True,
