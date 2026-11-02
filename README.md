@@ -12,6 +12,7 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 
 - [Paso 0 – Estructura del proyecto y cómo reproducir](#paso-0--estructura-del-proyecto-y-cómo-reproducir)
 - [Paso 1 – Preprocesamiento y análisis exploratorio](#paso-1--preprocesamiento-y-análisis-exploratorio)
+- [Paso 2 – Model-centered ML: baseline, validación cruzada y métricas](#paso-2--model-centered-ml-baseline-validación-cruzada-y-métricas)
 
 ---
 
@@ -178,3 +179,65 @@ La tasa de cancelación varía entre 30 % y 50 % según el mes, sin una estacion
 2. El problema tiene señal fuerte en pocas variables: compromiso, tipo de cliente, región, anticipación, pedidos especiales e historial. Varias de esas relaciones son **no lineales y con interacciones** (por ejemplo `client_type × commitment`), así que se espera que los modelos basados en árboles superen a los lineales.
 3. Las cohortes `client_type`, `service_tier` y `reserved_gpu_type` tienen tasas de cancelación muy distintas. Ahí se va a centrar el análisis de errores (Paso 3).
 4. El desbalance es moderado (42/58), así que para el baseline no hace falta re-muestrear. Sí conviene elegir métricas que no dependan sólo de la accuracy (Paso 2.3).
+
+---
+
+## Paso 2 – Model-centered ML: baseline, validación cruzada y métricas
+
+**Script:** `python steps/02_baseline.py` (~8 min con 4 cores) → `reports/tables/02_*`, `reports/figures/02_*`, `models/baseline.json`.
+
+### 2.2 Esquema de validación cruzada
+
+Este punto va primero porque todo lo demás depende de él.
+
+* **5-fold CV estratificado y agrupado (`StratifiedGroupKFold`, `shuffle=True`, semilla 42), sólo sobre el conjunto de train.** Estratificar mantiene el 41.7 % de cancelaciones en cada fold. Agrupar garantiza que las copias idénticas de una misma reserva no queden repartidas entre entrenamiento y validación (ver 1.3).
+* Todo el preprocesamiento (imputación, escalado, one-hot) vive **dentro del `Pipeline`**, así que se re-ajusta en cada fold con los datos de entrenamiento de ese fold. Ninguna estadística de validación se filtra al entrenamiento.
+* Se usan **los mismos 5 folds para todos los modelos y experimentos** del TP (`tp3.evaluation.get_cv`). Así las comparaciones son pareadas y las diferencias se deben al modelo y no al azar del split.
+* Se reporta **media ± desvío estándar** entre folds, tanto en validación como en train (para diagnosticar overfitting).
+* Además de las métricas, la CV propia (`tp3.evaluation.cross_validate`) devuelve las **predicciones out-of-fold (OOF)** de cada fila de train. Esas predicciones son las que se usan para el análisis de errores del Paso 3, sin tocar el test.
+
+### 2.3 Métricas elegidas y justificación
+
+| métrica | por qué |
+|:--|:--|
+| **ROC-AUC** | Mide qué tan bien el modelo **ordena** las reservas por riesgo de cancelación, sin depender de un umbral. Esto importa en este problema: la operación puede elegir el umbral según la capacidad disponible (por ejemplo, sobre-reservar sólo el top-k de riesgo). Además es insensible al desbalance moderado (42/58) y, al ser continua, es más estable para comparar hiperparámetros que una métrica umbralizada. |
+| **F1 de la clase "cancelada"** | Mide la calidad de las **decisiones** al umbral de operación (0.5). Combina *precision* (de las reservas que marcamos como canceladas, cuántas lo son; un FP lleva a liberar o sobre-vender capacidad de un cliente que sí viene) y *recall* (cuántas cancelaciones detectamos; un FN deja GPU reservada ociosa). La accuracy sola no alcanza: un clasificador trivial que nunca predice cancelación ya obtiene 58 % de accuracy y F1 = 0. |
+
+**Cómo se usan:**
+
+* **Comparar modelos:** se reportan las dos (más accuracy, precision y recall como contexto).
+* **Seleccionar hiperparámetros:** `GridSearchCV(scoring={"roc_auc", "f1"}, refit="roc_auc")`. ROC-AUC es el criterio principal porque es independiente del umbral y menos ruidosa. F1 se mira como verificación.
+* **Decidir el baseline final:** se elige el modelo con mejor ROC-AUC y se exige que también tenga el mejor F1 (el script lo verifica con un `assert`).
+
+### 2.1 Clasificadores y calibración de hiperparámetros
+
+Se calibraron tres clasificadores vistos en clase, todos dentro del mismo `Pipeline` de preprocesamiento (el árbol sin escalado, porque no lo necesita):
+
+| modelo | grilla | mejor configuración |
+|:--|:--|:--|
+| Regresión Logística (L2) | `C ∈ {0.001, …, 100}` | `C = 0.1` |
+| k-NN | `k ∈ {5, 15, 31, 51, 101}` × `weights ∈ {uniform, distance}` | `k = 31, weights = distance` |
+| Árbol de Decisión | `max_depth ∈ {3, 5, 8, 12, 16, 20, None}` × `min_samples_leaf ∈ {1, 5, 20, 50}` | `max_depth = 8, min_samples_leaf = 1` |
+
+![curvas de validación](reports/figures/02_curvas_validacion_baseline.png)
+
+Qué muestran las curvas de validación:
+
+* **Regresión logística:** prácticamente plana a partir de `C = 0.01`, con train y validación casi iguales (0.907 vs 0.898). Es un modelo de **alto sesgo**: la frontera lineal no captura las interacciones vistas en el EDA.
+* **k-NN:** con `weights=distance` el score de train es 1.0 por construcción (cada punto es su propio vecino). En validación el óptimo está en k ≈ 31. Sufre con las ~100 dimensiones del one-hot (maldición de la dimensionalidad).
+* **Árbol:** muestra el *trade-off* sesgo-varianza clásico. Hasta `max_depth = 8` mejoran train y validación. A partir de ahí train sigue subiendo hasta 1.0, mientras validación cae de 0.910 a 0.80 sin límite de profundidad (overfitting).
+
+### Resultado: comparación con 5-fold CV
+
+| modelo | ROC-AUC | F1 | accuracy | precision | recall | train ROC-AUC |
+|:--|:--|:--|:--|:--|:--|--:|
+| Dummy (clase mayoritaria) | 0.5000 ± 0.0000 | 0.0000 ± 0.0000 | 0.5829 | 0.0000 | 0.0000 | 0.500 |
+| Regresión Logística (C=0.1) | 0.8982 ± 0.0055 | 0.7627 ± 0.0098 | 0.8148 | 0.8196 | 0.7134 | 0.907 |
+| k-NN (k=31, distance) | 0.8784 ± 0.0110 | 0.7544 ± 0.0138 | 0.8068 | 0.8026 | 0.7117 | 1.000 |
+| **Árbol de Decisión (depth=8)** | **0.9100 ± 0.0035** | **0.7901 ± 0.0061** | **0.8357** | **0.8459** | **0.7411** | 0.925 |
+
+![comparación baseline](reports/figures/02_comparacion_baseline.png)
+
+**Baseline elegido: Árbol de Decisión (`max_depth=8`).** Es el mejor en las dos métricas, con la menor varianza entre folds y una brecha train/validación chica (0.925 vs 0.910). Además es interpretable, lo que ayuda en el análisis de errores. Este es el punto de referencia que cada estrategia del Paso 4 tiene que superar: **ROC-AUC 0.910 / F1 0.790**.
+
+Un patrón que aparece en los tres modelos: **la precision (≈ 0.82–0.85) es mayor que el recall (≈ 0.71–0.74)**. Con umbral 0.5, el modelo deja pasar más de una de cada cuatro cancelaciones (FN). Esto se analiza en el Paso 3.

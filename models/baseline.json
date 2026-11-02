@@ -1,0 +1,7 @@
+{
+  "name": "\u00c1rbol de Decisi\u00f3n",
+  "params": {
+    "model__max_depth": 8,
+    "model__min_samples_leaf": 1
+  }
+}
