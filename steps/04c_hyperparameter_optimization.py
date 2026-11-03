@@ -1,14 +1,16 @@
 """Paso 4 – Estrategia 3: Hyperparameter optimization.
 
-* LightGBM (mejor familia del Paso 4.2): Random Search (RandomizedSearchCV, 40
-  configuraciones) vs. optimización bayesiana (Optuna TPE, 40 trials) sobre el
-  mismo espacio y los mismos folds -> se compara convergencia y resultado.
-* XGBoost (Optuna, 30 trials) y Random Forest (Random Search, 10 configs) se
+* LightGBM (mejor familia del Paso 4.2): Random Search (30 configuraciones al
+  azar) vs. optimización bayesiana (Optuna TPE, 30 trials) sobre el MISMO espacio
+  de búsqueda y los mismos folds -> se compara convergencia y resultado.
+  Ambas búsquedas se implementan con Optuna (RandomSampler vs TPESampler) y se
+  guardan en una base SQLite (models/optuna.db), así una corrida interrumpida
+  se puede reanudar sin perder lo ya evaluado.
+* XGBoost (TPE, 20 trials) y Random Forest (Random Search, 8 configs) se
   tunean también, para usarlos después como miembros de ensambles (4.4).
 """
 import json
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -18,10 +20,8 @@ import numpy as np
 import optuna
 import pandas as pd
 from lightgbm import LGBMClassifier
-from scipy.stats import loguniform, randint, uniform
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, roc_auc_score
-from sklearn.model_selection import RandomizedSearchCV
 from xgboost import XGBClassifier
 
 from tp3 import plotting as P
@@ -37,7 +37,7 @@ groups = duplicate_groups(train)
 cv = get_cv()
 DROP = json.loads((MODEL_DIR / "feature_selection.json").read_text())["drop"]
 RS = RANDOM_STATE
-N_LGBM = 40
+N_LGBM = 30
 
 
 def lgbm(**kw):
@@ -49,31 +49,25 @@ def cv_auc(pipe):
     return folds.val_roc_auc.mean()
 
 
-# ======================================================= LightGBM: Random Search
-space_rs = {
-    "model__n_estimators": randint(200, 1500),
-    "model__learning_rate": loguniform(0.01, 0.2),
-    "model__num_leaves": randint(15, 256),
-    "model__min_child_samples": randint(5, 100),
-    "model__subsample": uniform(0.5, 0.5),
-    "model__colsample_bytree": uniform(0.4, 0.6),
-    "model__reg_lambda": loguniform(1e-3, 10),
-    "model__reg_alpha": loguniform(1e-3, 10),
-}
-t0 = time.perf_counter()
-rs = RandomizedSearchCV(make_fe_pipeline(lgbm(), scale=False, drop=DROP), space_rs, n_iter=N_LGBM,
-                        scoring={"roc_auc": "roc_auc", "f1": "f1"}, refit=False, cv=cv, n_jobs=4,
-                        random_state=RS)
-rs.fit(X, y, groups=groups)
-t_rs = time.perf_counter() - t0
-rs_res = pd.DataFrame(rs.cv_results_)
-rs_curve = rs_res.mean_test_roc_auc.to_numpy()
-best_rs = rs_res.loc[rs_res.mean_test_roc_auc.idxmax()]
-best_rs_params = {k.replace("model__", ""): (v.item() if hasattr(v, "item") else v) for k, v in best_rs.params.items()}
-print(f"Random Search: best AUC={best_rs.mean_test_roc_auc:.4f} en {t_rs/60:.1f} min", best_rs_params, flush=True)
+STORAGE = f"sqlite:///{MODEL_DIR / 'optuna.db'}"
 
 
-# ======================================================= LightGBM: Optuna (TPE)
+def run_study(name, make_sampler, objective, n_trials):
+    """Crea (o reanuda) un estudio persistente y completa los trials que falten.
+    La semilla del sampler se desplaza según los trials ya hechos, así al reanudar
+    no se repiten las mismas configuraciones."""
+    study = optuna.create_study(study_name=name, storage=STORAGE, direction="maximize", load_if_exists=True)
+    done = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    study.sampler = make_sampler(RS + done)
+    if done < n_trials:
+        study.optimize(objective, n_trials=n_trials - done,
+                       callbacks=[lambda st, tr: print(f"  {name} #{tr.number}: {tr.value:.4f}", flush=True)])
+    trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE][:n_trials]
+    print(f"{name}: best AUC={max(t.value for t in trials):.4f}", flush=True)
+    return study, trials, sum(t.duration.total_seconds() for t in trials)
+
+
+# ======================================================= LightGBM: Random Search vs Optuna TPE
 def lgbm_params(trial):
     return {
         "n_estimators": trial.suggest_int("n_estimators", 200, 1500, log=True),
@@ -87,13 +81,18 @@ def lgbm_params(trial):
     }
 
 
-t0 = time.perf_counter()
-study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=RS, n_startup_trials=10))
-study.optimize(lambda tr: cv_auc(make_fe_pipeline(lgbm(**lgbm_params(tr)), scale=False, drop=DROP)),
-               n_trials=N_LGBM)
-t_tpe = time.perf_counter() - t0
-tpe_curve = np.array([t.value for t in study.trials])
-print(f"Optuna TPE: best AUC={study.best_value:.4f} en {t_tpe/60:.1f} min", study.best_params, flush=True)
+def lgbm_objective(tr):
+    return cv_auc(make_fe_pipeline(lgbm(**lgbm_params(tr)), scale=False, drop=DROP))
+
+
+_, rs_trials, t_rs = run_study("lgbm_random", lambda sd: optuna.samplers.RandomSampler(seed=sd), lgbm_objective, N_LGBM)
+study, tpe_trials, t_tpe = run_study("lgbm_tpe", lambda sd: optuna.samplers.TPESampler(seed=sd, n_startup_trials=10),
+                                     lgbm_objective, N_LGBM)
+rs_curve = np.array([t.value for t in rs_trials])
+tpe_curve = np.array([t.value for t in tpe_trials])
+best_rs_trial = max(rs_trials, key=lambda t: t.value)
+best_tpe_trial = max(tpe_trials, key=lambda t: t.value)
+best_rs_params, best_tpe_params = best_rs_trial.params, best_tpe_trial.params
 
 # convergencia
 fig, ax = plt.subplots(figsize=(7, 3.8))
@@ -130,30 +129,34 @@ def xgb(**kw):
     return XGBClassifier(tree_method="hist", random_state=RS, n_jobs=1, eval_metric="logloss", **kw)
 
 
-study_xgb = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=RS, n_startup_trials=8))
-study_xgb.optimize(lambda tr: cv_auc(make_fe_pipeline(xgb(**xgb_params(tr)), scale=False, drop=DROP)), n_trials=30)
-print(f"XGBoost TPE: best AUC={study_xgb.best_value:.4f}", study_xgb.best_params, flush=True)
+study_xgb, xgb_trials, _ = run_study(
+    "xgb_tpe", lambda sd: optuna.samplers.TPESampler(seed=sd, n_startup_trials=8),
+    lambda tr: cv_auc(make_fe_pipeline(xgb(**xgb_params(tr)), scale=False, drop=DROP)), 20)
+best_xgb_params = max(xgb_trials, key=lambda t: t.value).params
 
-space_rf = {
-    "model__max_features": uniform(0.1, 0.6),
-    "model__min_samples_leaf": randint(1, 10),
-    "model__max_depth": [None, 20, 30],
-    "model__class_weight": [None, "balanced_subsample"],
-}
-rs_rf = RandomizedSearchCV(make_fe_pipeline(RandomForestClassifier(n_estimators=300, n_jobs=1, random_state=RS),
-                                            scale=False, drop=DROP),
-                           space_rf, n_iter=10, scoring="roc_auc", cv=cv, n_jobs=4, random_state=RS)
-rs_rf.fit(X, y, groups=groups)
-best_rf_params = {k.replace("model__", ""): (v.item() if hasattr(v, "item") else v) for k, v in rs_rf.best_params_.items()}
-print(f"RF Random Search: best AUC={rs_rf.best_score_:.4f}", best_rf_params, flush=True)
+
+def rf_params(trial):
+    return {
+        "max_features": trial.suggest_float("max_features", 0.1, 0.7),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+        "max_depth": trial.suggest_categorical("max_depth", [None, 20, 30]),
+        "class_weight": trial.suggest_categorical("class_weight", [None, "balanced_subsample"]),
+    }
+
+
+_, rf_trials, _ = run_study(
+    "rf_random", lambda sd: optuna.samplers.RandomSampler(seed=sd),
+    lambda tr: cv_auc(make_fe_pipeline(RandomForestClassifier(n_estimators=300, n_jobs=1, random_state=RS,
+                                                              **rf_params(tr)), scale=False, drop=DROP)), 8)
+best_rf_params = max(rf_trials, key=lambda t: t.value).params
 
 # ======================================================= evaluación final (mismos folds, métricas completas)
-best_lgbm_params = study.best_params if study.best_value >= best_rs.mean_test_roc_auc else best_rs_params
+best_lgbm_params = best_tpe_params if best_tpe_trial.value >= best_rs_trial.value else best_rs_params
 hpo = {
     "lightgbm": best_lgbm_params,
     "lightgbm_random_search": best_rs_params,
-    "lightgbm_tpe": study.best_params,
-    "xgboost": study_xgb.best_params,
+    "lightgbm_tpe": best_tpe_params,
+    "xgboost": best_xgb_params,
     "random_forest": {**best_rf_params, "n_estimators": 500},
 }
 (MODEL_DIR / "hpo_params.json").write_text(json.dumps(hpo, indent=2, default=str))
@@ -163,9 +166,9 @@ final = {
     "LightGBM sin tunear": make_fe_pipeline(lgbm(n_estimators=400, learning_rate=0.05, num_leaves=63, subsample=1.0),
                                             scale=False, drop=DROP),
     "LightGBM – Random Search": make_fe_pipeline(lgbm(**best_rs_params), scale=False, drop=DROP),
-    "LightGBM – Optuna TPE": make_fe_pipeline(lgbm(**study.best_params), scale=False, drop=DROP),
+    "LightGBM – Optuna TPE": make_fe_pipeline(lgbm(**best_tpe_params), scale=False, drop=DROP),
     "XGBoost sin tunear": make_fe_pipeline(xgb(n_estimators=400, learning_rate=0.05, max_depth=6), scale=False, drop=DROP),
-    "XGBoost – Optuna TPE": make_fe_pipeline(xgb(**study_xgb.best_params), scale=False, drop=DROP),
+    "XGBoost – Optuna TPE": make_fe_pipeline(xgb(**best_xgb_params), scale=False, drop=DROP),
     "Random Forest sin tunear": make_fe_pipeline(RandomForestClassifier(n_estimators=500, n_jobs=1, random_state=RS),
                                                  scale=False, drop=DROP),
     "Random Forest – Random Search": make_fe_pipeline(
@@ -196,10 +199,10 @@ t["F1 cohorte foco"] = res.foco_f1.map("{:.4f}".format)
 save_table(t, "04c_hpo")
 print(t.to_string(index=False))
 save_table(pd.DataFrame([
-    {"técnica": "Random Search", "evaluaciones": N_LGBM, "mejor AUC (CV)": best_rs.mean_test_roc_auc,
+    {"técnica": "Random Search", "evaluaciones": N_LGBM, "mejor AUC (CV)": best_rs_trial.value,
      "minutos": t_rs / 60, "iteración del mejor": int(np.argmax(rs_curve)) + 1},
-    {"técnica": "Optuna TPE", "evaluaciones": N_LGBM, "mejor AUC (CV)": study.best_value,
+    {"técnica": "Optuna TPE", "evaluaciones": N_LGBM, "mejor AUC (CV)": best_tpe_trial.value,
      "minutos": t_tpe / 60, "iteración del mejor": int(np.argmax(tpe_curve)) + 1},
 ]), "04c_random_vs_tpe")
-pd.DataFrame([{"param": k, "Random Search": best_rs_params.get(k), "Optuna TPE": study.best_params.get(k)}
-              for k in study.best_params]).pipe(save_table, "04c_mejores_params_lgbm")
+pd.DataFrame([{"param": k, "Random Search": best_rs_params.get(k), "Optuna TPE": best_tpe_params.get(k)}
+              for k in best_tpe_params]).pipe(save_table, "04c_mejores_params_lgbm")

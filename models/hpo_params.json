@@ -1,0 +1,49 @@
+{
+  "lightgbm": {
+    "n_estimators": 381,
+    "learning_rate": 0.030775431884137186,
+    "num_leaves": 101,
+    "min_child_samples": 17,
+    "subsample": 0.7435706941488183,
+    "colsample_bytree": 0.9242298242113405,
+    "reg_lambda": 0.030861512911399897,
+    "reg_alpha": 0.005151755360451222
+  },
+  "lightgbm_random_search": {
+    "n_estimators": 341,
+    "learning_rate": 0.02077006447411961,
+    "num_leaves": 236,
+    "min_child_samples": 15,
+    "subsample": 0.9460232775885566,
+    "colsample_bytree": 0.7786831755983578,
+    "reg_lambda": 1.5109330261674463,
+    "reg_alpha": 0.10245858939867322
+  },
+  "lightgbm_tpe": {
+    "n_estimators": 381,
+    "learning_rate": 0.030775431884137186,
+    "num_leaves": 101,
+    "min_child_samples": 17,
+    "subsample": 0.7435706941488183,
+    "colsample_bytree": 0.9242298242113405,
+    "reg_lambda": 0.030861512911399897,
+    "reg_alpha": 0.005151755360451222
+  },
+  "xgboost": {
+    "n_estimators": 415,
+    "learning_rate": 0.0304372100463309,
+    "max_depth": 12,
+    "min_child_weight": 5.715487959197622,
+    "subsample": 0.9546892444063695,
+    "colsample_bytree": 0.7800281421062507,
+    "reg_lambda": 0.04189849747570059,
+    "gamma": 0.002296162223766939
+  },
+  "random_forest": {
+    "max_features": 0.20909498032426038,
+    "min_samples_leaf": 2,
+    "max_depth": 20,
+    "class_weight": "balanced_subsample",
+    "n_estimators": 500
+  }
+}

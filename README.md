@@ -506,3 +506,69 @@ Conclusiones:
 * **Naive Bayes** es el peor: el supuesto de independencia condicional no se cumple con tantas variables correlacionadas.
 * La regresión logística rinde un poco menos que en 4.1 (0.901 vs 0.908) porque la selección de variables se hizo con LightGBM, y una variable redundante para el boosting puede seguir siendo útil para un modelo lineal.
 * Los ensambles tienen **AUC de train ≈ 0.99** (con validación en 0.939): hay algo de varianza. Por eso se tunea la regularización (`min_child_samples`, `reg_lambda`, `subsample`, …) en la estrategia siguiente.
+
+### 4.3 Estrategia 3 – Hyperparameter optimization
+
+**Script:** `python steps/04c_hyperparameter_optimization.py` (~25 min). Las búsquedas se guardan en `models/optuna.db` (SQLite), así que una corrida interrumpida se reanuda donde quedó. Mejores parámetros en `models/hpo_params.json`.
+
+**Justificación:** LightGBM ganó la selección de modelos con hiperparámetros genéricos y muestra una brecha train/validación de 0.99 vs 0.94, es decir algo de varianza. Tunear la capacidad (`num_leaves`, `n_estimators`, `learning_rate`) y la regularización (`min_child_samples`, `subsample`, `colsample_bytree`, `reg_lambda`, `reg_alpha`) debería ajustar ese balance.
+
+**Diseño.** Se comparan dos técnicas de búsqueda con el **mismo espacio**, el **mismo presupuesto** (30 evaluaciones de 5-fold CV) y los **mismos folds**. El criterio a maximizar es el ROC-AUC medio de CV.
+
+| hiperparámetro | rango |
+|:--|:--|
+| `n_estimators` | 200 – 1500 (log) |
+| `learning_rate` | 0.01 – 0.2 (log) |
+| `num_leaves` | 15 – 255 (log) |
+| `min_child_samples` | 5 – 100 (log) |
+| `subsample` / `colsample_bytree` | 0.5 – 1 / 0.4 – 1 |
+| `reg_lambda`, `reg_alpha` | 0.001 – 10 (log) |
+
+* **Random Search:** configuraciones muestreadas al azar (`optuna.samplers.RandomSampler`, equivalente a `RandomizedSearchCV`).
+* **Optimización bayesiana (Optuna TPE):** las primeras 10 configuraciones son aleatorias (las mismas que en Random Search, misma semilla). A partir de ahí, el *Tree-structured Parzen Estimator* modela qué regiones del espacio dan mejor AUC y propone las siguientes configuraciones en esas regiones.
+
+![convergencia](reports/figures/04c_convergencia_hpo.png)
+
+(la línea punteada es LightGBM sin tunear del Paso 4.2, AUC 0.9390)
+
+| técnica | mejor AUC (CV) | mediana AUC trials 11–30 | % trials 11–30 con AUC > 0.939 | peor trial 11–30 | minutos |
+|:--|--:|--:|--:|--:|--:|
+| Random Search | 0.9405 | 0.9370 | 15 % | 0.9313 | 6.5 |
+| **Optuna TPE** | **0.9406** | **0.9397** | **75 %** | **0.9377** | 5.9 |
+
+El mejor valor final es casi el mismo, pero **TPE explora de forma mucho más eficiente**. Una vez que termina la fase aleatoria, 3 de cada 4 configuraciones que propone superan al modelo sin tunear, contra 15 % en Random Search, que sigue probando zonas malas (hasta 0.931). Con presupuestos más chicos, o modelos más caros de entrenar, esa diferencia sería decisiva.
+
+**Mejores hiperparámetros de LightGBM:**
+
+| parámetro | Random Search | **Optuna TPE (elegido)** |
+|:--|--:|--:|
+| `n_estimators` | 341 | 381 |
+| `learning_rate` | 0.021 | 0.031 |
+| `num_leaves` | 236 | 101 |
+| `min_child_samples` | 15 | 17 |
+| `subsample` | 0.95 | 0.74 |
+| `colsample_bytree` | 0.78 | 0.92 |
+| `reg_lambda` / `reg_alpha` | 1.51 / 0.10 | 0.031 / 0.005 |
+
+Las dos búsquedas convergen a una región parecida: ~350–380 árboles, *learning rate* bajo (0.02–0.03), árboles más grandes que el default (100–240 hojas) y hojas de ≥ 15 muestras. Árboles más profundos con *learning rate* bajo capturan interacciones de orden alto (lo que pedía la cohorte foco), y el `subsample` y el mínimo de muestras por hoja controlan la varianza.
+
+**Impacto** (mismos folds; Δ pareado contra el mismo modelo sin tunear y con el mismo pipeline):
+
+| modelo | ROC-AUC | F1 | Δ AUC pareado | folds que mejora | AUC foco | F1 foco |
+|:--|:--|:--|--:|--:|--:|--:|
+| LightGBM sin tunear | 0.9383 ± 0.0051 | 0.8216 ± 0.0101 | – | – | 0.874 | 0.720 |
+| LightGBM – Random Search | 0.9405 ± 0.0052 | 0.8211 ± 0.0141 | +0.0022 | 4/5 | 0.877 | 0.714 |
+| **LightGBM – Optuna TPE** | **0.9406 ± 0.0043** | **0.8242 ± 0.0141** | **+0.0023** | **5/5** | 0.876 | 0.720 |
+| XGBoost sin tunear | 0.9365 ± 0.0054 | 0.8179 ± 0.0166 | – | – | 0.871 | 0.715 |
+| XGBoost – Optuna TPE | 0.9398 ± 0.0053 | 0.8212 ± 0.0146 | +0.0034 | 5/5 | 0.876 | 0.716 |
+| Random Forest sin tunear | 0.9382 ± 0.0052 | 0.8186 ± 0.0130 | – | – | 0.871 | 0.704 |
+| Random Forest – Random Search | 0.9384 ± 0.0052 | 0.8222 ± 0.0127 | +0.0002 | 3/5 | 0.872 | 0.720 |
+
+(“LightGBM sin tunear” da 0.9383 acá y 0.9390 en 4.2. La diferencia es que acá el pipeline no escala las numéricas, lo que cambia levemente los cortes del histograma de LightGBM. Para medir el efecto del tuning se compara contra la versión con el mismo pipeline.)
+
+Conclusiones:
+
+* El tuning da una mejora **chica pero consistente**: +0.002 AUC en LightGBM, mejor en los 5 folds, y +0.003 en F1. Con XGBoost el efecto es mayor (+0.003 AUC) porque su configuración por defecto (`max_depth=6`) era más restrictiva. En Random Forest casi no cambia nada: el bagging es poco sensible a sus hiperparámetros.
+* La ganancia es mucho menor que la del cambio de familia de modelo (+0.029). Una vez elegido un modelo con la capacidad adecuada, el tuning aporta un ajuste fino.
+* **Riesgo de sobreajustar la CV:** después de 30+30 evaluaciones sobre los mismos folds, el mejor valor tiene un sesgo optimista (la ganancia de +0.002 es comparable a ese sesgo). Por eso el Paso 5 evalúa en el test una única vez.
+* **Modelo elegido:** LightGBM con los parámetros de TPE (mejor AUC y mejor F1). XGBoost y RF tuneados se usan como miembros de los ensambles de 4.4.

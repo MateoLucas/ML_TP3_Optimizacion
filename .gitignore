@@ -5,3 +5,4 @@ __pycache__/
 venv/
 catboost_info/
 .DS_Store
+models/optuna.db

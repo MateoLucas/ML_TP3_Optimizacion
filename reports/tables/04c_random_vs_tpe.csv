@@ -1,0 +1,3 @@
+técnica,evaluaciones,mejor AUC (CV),minutos,iteración del mejor
+Random Search,30,0.9405288249010912,6.52789345,29
+Optuna TPE,30,0.9405831588766311,5.920352766666666,29
