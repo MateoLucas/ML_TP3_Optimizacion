@@ -472,3 +472,37 @@ Interpretación:
 | top 12 | 12 | 0.9291 ± 0.0082 | 0.8052 ± 0.0160 | −0.0095 ± 0.0038 |
 
 Regla de decisión: el subconjunto más chico que no pierda más de 0.001 de AUC en la comparación **pareada** fold a fold. **Se eliminan 19 variables (49 → 30) sin pérdida de rendimiento** (lista en `models/feature_selection.json`). Eso da un modelo más simple, más rápido y con menos dependencias de datos de entrada. Por debajo de 20 variables el rendimiento cae claramente. La selección se hizo con los mismos folds que la evaluación, así que la estimación puede ser levemente optimista. El test final (Paso 5) lo controla.
+
+### 4.2 Estrategia 2 – Model selection
+
+**Script:** `python steps/04b_model_selection.py` (~5.5 min).
+
+**Justificación:** las curvas de aprendizaje (3.2) muestran que el baseline está limitado por **sesgo**: un modelo de mayor capacidad extrae más de los mismos datos. Además, los errores de la cohorte foco requieren capturar interacciones entre señales débiles, que es justo lo que hacen los ensambles de árboles. Se compararon **11 familias de clasificadores** con configuraciones estándar (sin tunear, para que la comparación sea entre familias y no entre esfuerzos de tuning), todas con el mismo pipeline de 4.1 (FE + target encoding + 30 variables seleccionadas) y los mismos folds.
+
+| modelo | ROC-AUC | F1 | precision | recall | train AUC | fit/fold | AUC foco | F1 foco |
+|:--|:--|:--|--:|--:|--:|--:|--:|--:|
+| **LightGBM** | **0.9390 ± 0.0047** | **0.8215 ± 0.0137** | 0.852 | 0.793 | 0.991 | 3.5 s | **0.874** | **0.716** |
+| HistGradientBoosting | 0.9388 ± 0.0040 | 0.8191 ± 0.0121 | 0.850 | 0.790 | 0.977 | 8.4 s | 0.873 | 0.714 |
+| Random Forest | 0.9383 ± 0.0052 | 0.8181 ± 0.0140 | 0.865 | 0.776 | 0.999 | 31.8 s | 0.871 | 0.703 |
+| Extra Trees | 0.9382 ± 0.0052 | 0.8163 ± 0.0116 | 0.862 | 0.775 | 0.994 | 24.3 s | 0.869 | 0.699 |
+| XGBoost | 0.9365 ± 0.0054 | 0.8179 ± 0.0166 | 0.849 | 0.789 | 0.970 | 3.2 s | 0.871 | 0.715 |
+| Red neuronal (MLP 64-32) | 0.9307 ± 0.0058 | 0.8138 ± 0.0137 | 0.827 | 0.801 | 0.958 | 8.0 s | 0.859 | 0.706 |
+| SVM (RBF) | 0.9222 ± 0.0061 | 0.7986 ± 0.0152 | 0.845 | 0.757 | 0.942 | 58.2 s | 0.846 | 0.680 |
+| k-NN (k=31) | 0.9165 ± 0.0048 | 0.7944 ± 0.0141 | 0.820 | 0.770 | 0.999 | 0.8 s | 0.839 | 0.676 |
+| *BASELINE (Árbol d=8, sin FE)* | *0.9100 ± 0.0035* | *0.7901 ± 0.0061* | *0.846* | *0.741* | *0.925* | *1.6 s* | *0.810* | *0.643* |
+| Árbol de Decisión (d=8) | 0.9078 ± 0.0070 | 0.7845 ± 0.0112 | 0.824 | 0.749 | 0.926 | 0.9 s | 0.815 | 0.658 |
+| Regresión Logística | 0.9007 ± 0.0058 | 0.7656 ± 0.0100 | 0.823 | 0.716 | 0.908 | 0.9 s | 0.803 | 0.627 |
+| Naive Bayes (Gaussiano) | 0.8213 ± 0.0079 | 0.6698 ± 0.0179 | 0.537 | 0.892 | 0.825 | 0.8 s | 0.653 | 0.583 |
+
+![model selection](reports/figures/04b_model_selection.png)
+
+<img src="reports/figures/04b_curvas_roc.png" width="430">
+
+Conclusiones:
+
+* **Los ensambles de árboles (boosting y bagging) dominan**, con AUC 0.937–0.939 y F1 0.816–0.822. La mejora sobre el baseline es de **+0.029 AUC y +0.031 F1**, unas 6–8 desviaciones estándar entre folds, y casi toda viene de la cohorte foco (AUC 0.810 → 0.874, F1 0.643 → 0.716). Es la estrategia de mayor impacto.
+* Entre los cuatro mejores las diferencias (≤ 0.001 AUC) están **dentro del ruido** entre folds. Se elige **LightGBM** como modelo principal porque tiene el mejor AUC y F1, es el más rápido (3.5 s por fold contra 32 s de RF) y es más fácil de tunear. RF, XGBoost y HistGB quedan como candidatos para ensambles (4.4), porque cometen errores parcialmente distintos (bagging vs boosting).
+* **k-NN** mejora mucho respecto del Paso 2 (0.878 → 0.917). El target encoding reemplazó ~100 columnas one-hot por 3 continuas y eso redujo la maldición de la dimensionalidad. **SVM** y **MLP** quedan en un punto intermedio y son más costosos.
+* **Naive Bayes** es el peor: el supuesto de independencia condicional no se cumple con tantas variables correlacionadas.
+* La regresión logística rinde un poco menos que en 4.1 (0.901 vs 0.908) porque la selección de variables se hizo con LightGBM, y una variable redundante para el boosting puede seguir siendo útil para un modelo lineal.
+* Los ensambles tienen **AUC de train ≈ 0.99** (con validación en 0.939): hay algo de varianza. Por eso se tunea la regularización (`min_child_samples`, `reg_lambda`, `subsample`, …) en la estrategia siguiente.
