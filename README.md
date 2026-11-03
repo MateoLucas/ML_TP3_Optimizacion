@@ -13,6 +13,7 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 - [Paso 0 – Estructura del proyecto y cómo reproducir](#paso-0--estructura-del-proyecto-y-cómo-reproducir)
 - [Paso 1 – Preprocesamiento y análisis exploratorio](#paso-1--preprocesamiento-y-análisis-exploratorio)
 - [Paso 2 – Model-centered ML: baseline, validación cruzada y métricas](#paso-2--model-centered-ml-baseline-validación-cruzada-y-métricas)
+- [Paso 3 – Error analysis y enfoque data-centered](#paso-3--error-analysis-y-enfoque-data-centered)
 
 ---
 
@@ -241,3 +242,163 @@ Qué muestran las curvas de validación:
 **Baseline elegido: Árbol de Decisión (`max_depth=8`).** Es el mejor en las dos métricas, con la menor varianza entre folds y una brecha train/validación chica (0.925 vs 0.910). Además es interpretable, lo que ayuda en el análisis de errores. Este es el punto de referencia que cada estrategia del Paso 4 tiene que superar: **ROC-AUC 0.910 / F1 0.790**.
 
 Un patrón que aparece en los tres modelos: **la precision (≈ 0.82–0.85) es mayor que el recall (≈ 0.71–0.74)**. Con umbral 0.5, el modelo deja pasar más de una de cada cuatro cancelaciones (FN). Esto se analiza en el Paso 3.
+
+---
+
+## Paso 3 – Error analysis y enfoque data-centered
+
+**Script:** `python steps/03_error_analysis.py` (~2.5 min) → `reports/tables/03_*`, `reports/figures/03_*`.
+
+El análisis se hace sobre las **predicciones out-of-fold** del baseline (Árbol `max_depth=8`) en train. Cada reserva recibe la predicción de un modelo que no la vio al entrenar, así que los errores son representativos de lo que pasaría con datos nuevos, y el test sigue sin tocarse. Las métricas OOF globales coinciden con la CV: ROC-AUC 0.910 y F1 0.790.
+
+### 3.1 Análisis de errores
+
+#### Visión global: el modelo pierde cancelaciones (FN)
+
+<img src="reports/figures/03_matriz_confusion.png" width="330"> <img src="reports/figures/03_distribucion_probabilidades.png" width="560">
+
+* Hay 6 288 errores sobre 38 274 reservas (16.4 %). **Dos tercios son falsos negativos** (4 133 cancelaciones no detectadas, FNR = 25.9 %) y un tercio falsos positivos (2 155, FPR = 9.7 %).
+* Las cancelaciones con perfil "obvio" (locked_allocation, historial de cancelaciones, mucha anticipación) se predicen con probabilidad cercana a 1. En cambio, muchas cancelaciones reciben probabilidad baja: **1 138 FN tienen p < 0.2**. Son errores "confiados", que no se corrigen moviendo el umbral. Sólo 585 errores (9 %) caen en la zona dudosa 0.4–0.6.
+
+#### Cohortes pedidas: `client_type`, `service_tier`, `reserved_gpu_type`
+
+![errores por cohorte](reports/figures/03_cohortes_errores.png)
+
+Cada fila es una cohorte. Columna izquierda: ROC-AUC y F1 del subgrupo (las líneas punteadas son los valores globales). Centro: tasas de falsos positivos y negativos. Derecha: qué parte de los datos y qué parte de los errores aporta la cohorte.
+
+| cohorte | n | % datos | % errores | cancelación | ROC-AUC | F1 | FPR | FNR |
+|:--|--:|--:|--:|--:|--:|--:|--:|--:|
+| **client_type = cloud_marketplace** | 18 565 | 48.5 % | **72.1 %** | 37.9 % | **0.810** | **0.643** | 0.138 | 0.418 |
+| client_type = managed_account | 8 435 | 22.0 % | 12.0 % | 43.3 % | 0.973 | 0.895 | 0.064 | 0.122 |
+| client_type = research_consortium | 6 526 | 17.1 % | 5.2 % | 67.9 % | 0.988 | 0.963 | 0.052 | 0.049 |
+| client_type = independent_client | 2 923 | 7.6 % | 6.9 % | 15.7 % | 0.697 | 0.310 | 0.030 | **0.786** |
+| client_type = enterprise_client | 1 446 | 3.8 % | 2.7 % | 23.2 % | 0.856 | 0.725 | 0.048 | 0.342 |
+| client_type = sponsored_project | 250 | 0.7 % | 0.7 % | 11.2 % | 0.444 | 0.047 | 0.063 | **0.964** |
+| client_type = high_priority_partner | 129 | 0.3 % | 0.5 % | 22.5 % | 0.686 | 0.059 | 0.040 | **0.966** |
+| service_tier = standard | 29 965 | 78.3 % | 72.3 % | 42.8 % | 0.921 | 0.813 | 0.096 | 0.226 |
+| **service_tier = basic** | 5 093 | 13.3 % | **20.1 %** | 38.4 % | **0.819** | **0.630** | 0.124 | 0.448 |
+| service_tier = priority | 3 207 | 8.4 % | 7.5 % | 37.1 % | 0.916 | 0.781 | 0.059 | 0.295 |
+| reserved_gpu_type = GPU_T1 | 30 220 | 79.0 % | 71.8 % | 43.5 % | 0.926 | 0.818 | 0.090 | 0.227 |
+| **reserved_gpu_type = GPU_T4** | 5 679 | 14.8 % | **20.0 %** | 35.3 % | **0.831** | **0.659** | 0.128 | 0.394 |
+| reserved_gpu_type = GPU_T6 | 841 | 2.2 % | 3.3 % | 39.0 % | 0.811 | 0.670 | 0.177 | 0.357 |
+| reserved_gpu_type = GPU_T5 | 737 | 1.9 % | 2.2 % | 31.2 % | 0.818 | 0.628 | 0.059 | 0.483 |
+| reserved_gpu_type = GPU_T2 | 560 | 1.5 % | 2.1 % | 33.0 % | 0.794 | 0.564 | 0.077 | 0.546 |
+| reserved_gpu_type = GPU_T7 | 225 | 0.6 % | 0.4 % | 24.0 % | 0.927 | 0.659 | 0.006 | 0.500 |
+
+Lectura:
+
+* **`client_type`** es la cohorte que más diferencia hace. `managed_account` y `research_consortium` son casi perfectos (AUC 0.97–0.99) porque buena parte de sus reservas son `locked_allocation`, que siempre se cancelan. **`cloud_marketplace` concentra el 72 % de los errores con sólo el 48 % de los datos**: AUC 0.81, y no detecta el 42 % de sus cancelaciones. Los clientes directos de baja cancelación (`independent_client`, `sponsored_project`, `high_priority_partner`) tienen un problema distinto. El modelo casi nunca predice "cancela" en ellos (tasa predicha 4–6 % contra una real de 11–23 %), así que su F1 cae a 0.05–0.31 con FNR de 0.79–0.97. Además su AUC es bajo (0.44–0.70), es decir que el modelo tampoco ordena bien dentro de esos grupos. Son pocos datos (≤ 3 000 filas) y no hay ninguna señal fuerte.
+* **`service_tier`:** `basic` es el peor (AUC 0.82, F1 0.63) y aporta 20 % de los errores con 13 % de los datos. `standard` y `priority` quedan cerca del promedio.
+* **`reserved_gpu_type`:** `GPU_T1` (79 % de los datos) está por encima del promedio. **Todos los demás tipos están peor** (AUC 0.79–0.83 y FNR 0.36–0.55). El árbol usa sus divisiones en el grupo mayoritario y los tipos minoritarios quedan sub-modelados.
+
+#### Otros subgrupos relevantes
+
+![otros subgrupos](reports/figures/03_subgrupos_extra.png)
+
+* **`reservation_commitment`:** 99.9 % de los errores ocurre en `no_commitment`. `locked_allocation` está resuelto (F1 = 1.00).
+* **Anticipación (`hours_before_execution`):** las reservas con 0–7 h de anticipación cancelan poco (13 %), pero cuando cancelan el modelo no las detecta: **FNR = 0.86** y F1 = 0.22. Lo mismo ocurre con 8–30 h (FNR = 0.46).
+* **Pedidos especiales:** con ≥ 1 pedido especial la FNR es **0.84**. El modelo aprendió que "pedido especial ⇒ no cancela" y falla en el 22 % que sí cancela.
+* **Historial:** las reservas con historial previo son casi perfectas (F1 0.98), pero son sólo el 8 %. El 92 % sin historial tiene F1 0.76.
+* **Reservas únicas vs. en lote:** las únicas tienen F1 0.60 y las duplicadas 0.91. Las reservas en lote siguen patrones fáciles (bloques cancelados en masa).
+
+#### Falsos positivos y falsos negativos: ¿a quién se parecen?
+
+Promedios por tipo de resultado (tabla `03_perfil_fp_fn`):
+
+| variable | TP | **FN** | TN | **FP** |
+|:--|--:|--:|--:|--:|
+| n | 11 831 | **4 133** | 20 155 | **2 155** |
+| prob. media predicha | 0.89 | 0.28 | 0.13 | 0.70 |
+| hours_before_execution | 166 | **80** | 79 | **103** |
+| special_resource_requests | 0.06 | **0.91** | 0.79 | **0.24** |
+| % con pedidos especiales | 4.5 % | **67.6 %** | 56.8 % | **16.7 %** |
+| % región PRT | 70.2 % | **33.4 %** | 21.8 % | **37.2 %** |
+| % locked_allocation | 53.2 % | **0.0 %** | 0.1 % | 0.2 % |
+| % cloud_marketplace | 34.6 % | **71.1 %** | 49.3 % | **74.0 %** |
+| % broker_platform | 97.0 % | 86.6 % | 80.4 % | **94.4 %** |
+| % en lote (duplicada) | 70.3 % | **29.0 %** | 27.5 % | 22.9 % |
+| % con historial | 18.9 % | 1.4 % | 3.5 % | 1.3 % |
+
+* **Los FN se parecen a los TN, no a los TP.** Son reservas de anticipación corta (80 h), con pedidos especiales (68 %), fuera de PRT, sin compromiso, sin historial y únicas. Todos los indicadores disponibles dicen "va a ejecutarse" y aun así se cancelan. Con las features actuales son prácticamente indistinguibles de las reservas completadas. Para detectarlas hace falta **información nueva** (3.4), no sólo un mejor modelo.
+* **Los FP se parecen a los TP.** Son reservas de `cloud_marketplace` vía `broker_platform`, con anticipación relativamente larga y sin pedidos especiales: el perfil típico de quien cancela, que esta vez se ejecutó. Varios de estos casos (prob. media 0.70) están cerca del umbral y podrían corregirse con features más finas o con un modelo con más capacidad.
+
+#### Regiones problemáticas del dataset
+
+1. **Búsqueda de slices** (`03_slices_*`): se enumeraron todas las combinaciones de 1 y 2 variables con n ≥ 300 y se ordenaron por tasa de error y por cantidad de errores. La tasa de error global es 16.4 %.
+
+| slice | n | tasa de error | FP | FN | % de errores |
+|:--|--:|--:|--:|--:|--:|
+| service_tier=basic & anticipación 8–30 h | 1 129 | **30.8 %** | 104 | 244 | 5.5 % |
+| cloud_marketplace & anticipación 181–365 h | 2 389 | 29.4 % | 322 | 380 | 11.2 % |
+| cloud_marketplace & región PRT | 2 629 | 28.5 % | 271 | 477 | 11.9 % |
+| service_tier=basic & ≥ 1 pedido especial | 2 830 | 27.9 % | 48 | 741 | 12.5 % |
+| **cloud_marketplace & no_commitment** | **18 546** | 24.4 % | 1 594 | 2 937 | **72.1 %** |
+
+2. **Árbol "explicador" de errores:** un árbol de profundidad 3 entrenado para predecir *dónde* se equivoca el baseline (`03_arbol_errores.txt`) llega a las mismas regiones. La hoja `cloud_marketplace & hours_before_execution > 5.5 & single_experiment` tiene 15 057 reservas con 27 % de error. La hoja `no marketplace & no locked & región PRT` tiene 24 % de error.
+
+**Conclusión de 3.1:** el resto del dataset (`locked_allocation`, clientes con historial, reservas en lote) está prácticamente resuelto (error 8.9 %). El problema del sistema es **una región grande y difícil: reservas sin compromiso hechas por `cloud_marketplace`**. Hay además subgrupos chicos con recall muy bajo: clientes directos, tier `basic`, GPUs que no son `T1` y reservas de último momento.
+
+### 3.2 Curvas de aprendizaje
+
+Se calcularon con `learning_curve` usando el mismo CV agrupado, del 10 % al 100 % del fold de entrenamiento (3 k a 30.6 k filas), para cuatro modelos de distinta capacidad:
+
+![curvas de aprendizaje](reports/figures/03_curvas_aprendizaje.png)
+
+| modelo | ROC-AUC validación (3 k → 30.6 k filas) | brecha train–val final | diagnóstico |
+|:--|:--|--:|:--|
+| Árbol depth=8 (baseline) | 0.877 → **0.910**, plano desde ~23 k | 0.015 | **sesgo**: train baja y validación sube hasta encontrarse cerca de 0.91 |
+| Regresión logística | 0.894 → 0.898, plano desde ~7 k | 0.009 | **sesgo puro**: el modelo lineal se satura con muy pocos datos |
+| Árbol sin límite | 0.768 → 0.799 | 0.20 | **varianza**: memoriza el train |
+| LightGBM (400 árboles, default) | 0.910 → **0.938**, todavía sube levemente | 0.053 | buen balance. Con 3 k filas ya iguala al baseline entrenado con 30 k |
+
+**¿El sistema está limitado por el modelo o por los datos?** Por el **modelo**. Con el baseline, pasar de 15 k a 30 k filas mejora el AUC en +0.007. Cambiar a un modelo de mayor capacidad con los mismos datos mejora +0.028, y LightGBM con un décimo de los datos ya alcanza lo que el árbol logra con todos. El árbol de profundidad 8 y la regresión logística tienen curvas planas y juntas, la firma típica del alto sesgo. Agregarles datos no las mueve.
+
+**¿Más datos mejorarían significativamente?** **Globalmente no.** Para el modelo de alta capacidad la curva sigue subiendo, pero lento: +0.0015 AUC entre 22.7 k y 30.6 k filas. Duplicar el dataset daría, extrapolando, del orden de +0.003–0.005, menos que lo que se gana eligiendo bien el modelo y las features. **La excepción es la cohorte foco** (3.3). Una curva de aprendizaje restringida a `cloud_marketplace & no_commitment` muestra que LightGBM sigue subiendo con pendiente clara (0.855 → 0.874 entre 7 k y 15 k filas), mientras el árbol se estanca en ~0.81:
+
+<img src="reports/figures/03_curva_aprendizaje_cohorte_foco.png" width="560">
+
+Más ejemplos *de esa cohorte* (y sobre todo más *información* sobre ella) sí ayudarían.
+
+### 3.3 Estrategia data-centered: cohorte prioritaria
+
+**Cohorte elegida: `client_type = cloud_marketplace` & `reservation_commitment = no_commitment`.**
+
+| | cohorte foco | resto |
+|:--|--:|--:|
+| reservas (train) | 18 546 (**48.5 %**) | 19 728 |
+| tasa de cancelación | 37.8 % (~7 000 cancelaciones) | 45.4 % |
+| tasa de error del baseline | **24.4 %** | 8.9 % |
+| % del total de errores | **72.1 %** | 27.9 % |
+| ROC-AUC / F1 | **0.810 / 0.643** | 0.963 / 0.898 |
+| precision / recall | 0.719 / **0.581** | 0.933 / 0.866 |
+
+**Por qué es prioritaria:**
+
+* **Frecuencia:** es la mitad de las reservas y casi tres de cada cuatro errores. Ninguna otra intervención tiene tanto margen. El resto del dataset ya tiene F1 ≈ 0.90, así que **cualquier mejora global del sistema tiene que salir de acá**.
+* **Impacto operativo:** son reservas *sin compromiso contractual*, así que si se cancelan la plataforma no cobra penalidad y la capacidad GPU bloqueada queda ociosa sin compensación. Con recall 0.58 se pierde de vista el 42 % de esas cancelaciones (unas 2 900 en train), es decir capacidad que podría re-asignarse u ofrecerse en sobre-reserva. Los FP (~1 600) también cuestan: si se sobre-vende capacidad en base a una cancelación que no ocurre, hay clientes que llegan y no tienen GPU (penalidades de SLA y daño reputacional). Por ser el canal de marketplace, además, es el segmento más sensible a la competencia.
+* **Posibles causas del mal rendimiento:**
+  1. **Ausencia de las señales fuertes:** dentro de la cohorte, las dos variables más predictivas del dataset son constantes. El compromiso siempre es `no_commitment` y el 98 % no tiene historial. El modelo tiene que apoyarse en señales débiles (anticipación, región, pedidos especiales, costo).
+  2. **Capacidad del modelo:** el árbol de profundidad 8 usa gran parte de sus divisiones en separar las cohortes fáciles y le queda poca profundidad para las interacciones dentro de esta cohorte (región × anticipación, costo × tipo de GPU, etc.). La curva de aprendizaje de la cohorte confirma que un modelo de más capacidad sí extrae más señal.
+  3. **Ruido intrínseco / información faltante:** los FN de esta cohorte tienen perfiles idénticos a reservas completadas (3.1). Probablemente cancelan por factores externos (cambios de precio en el marketplace, cambios en el proyecto del cliente, ofertas de la competencia) que no están en los datos.
+  4. **Anonimato del canal:** es la cohorte con más reservas únicas (no en lote) y sin `organization_id`, así que no hay forma de reconocer al cliente entre reservas.
+* **Siguientes pasos propuestos** (los primeros se implementan en el Paso 4):
+  1. **Modelos de mayor capacidad** (boosting, ensambles) que capturen interacciones dentro de la cohorte.
+  2. **Feature engineering dirigido:** costo relativo al precio típico del mismo tipo de GPU y período (el cliente de marketplace compara precios), costo total de la reserva, día de la semana, interacciones de anticipación con región, *target encoding* del agente/broker (cada broker tiene políticas de cancelación distintas), ratio de cancelaciones previas.
+  3. **Tratamiento del desbalance / umbral:** la cohorte tiene recall bajo. Ajustar el umbral de decisión o usar `class_weight` puede mejorar el F1.
+  4. **Pesos por cohorte** o un modelo específico para la cohorte si un modelo global no alcanza.
+  5. **Adquisición de datos** (3.4) para los FN "confiados" que ningún modelo va a poder separar con las features actuales.
+
+### 3.4 Adquisición de datos
+
+Qué datos adicionales incorporaríamos, en orden de prioridad, y por qué esperamos que mejoren el sistema:
+
+| # | dato a adquirir | por qué debería mejorar el sistema | evidencia en nuestro análisis |
+|:--|:--|:--|:--|
+| 1 | **Identificador persistente del cliente en el marketplace y su historial completo** (cancelaciones y ejecuciones previas por cuenta, aunque reserve vía broker) | El historial es la señal más fuerte del dataset, pero hoy el 92 % de las reservas no lo tiene porque el cliente de marketplace es anónimo | Con historial: F1 0.98. Sin historial: F1 0.76. `previous_job_cancellations = 1` ⇒ 96 % de cancelación |
+| 2 | **Señales de "preparación" del workload** entre la reserva y la ejecución: datasets subidos, imagen/contenedor construido, repo vinculado, tests de quota | Son indicadores adelantados de que el workload realmente va a correr. Atacan los FN "confiados", que tienen un perfil estático igual al de los que completan | 1 138 FN con p < 0.2: las features estáticas no los separan |
+| 3 | **Dinámica de precios:** precio vigente al momento de reservar vs precio actual del mismo recurso, índice de precios de la competencia / spot | En marketplace, una baja de precio posterior incentiva a cancelar y re-reservar más barato. Hoy sólo tenemos el costo pactado | `estimated_cost_per_hour` no tiene relación marginal con la cancelación, pero lo relevante es el precio *relativo*, que hoy no podemos medir |
+| 4 | **Política de cancelación y pagos:** ventana de cancelación gratuita del broker, si hay pago anticipado o método de pago registrado, depósito | `no_commitment` agrupa situaciones muy distintas. Saber cuánto le cuesta cancelar a cada cliente permitiría segmentar la cohorte foco | `reservation_commitment` es la variable más fuerte, pero es binaria en la práctica |
+| 5 | **Fecha y hora de creación y log de modificaciones** (no sólo el conteo) | Permite features como "días desde la última modificación" o "reserva creada en fin de semana o fuera de horario", y evita el leakage temporal de `assigned_gpu_type` | `resource_modifications ≥ 1` reduce la cancelación a 15–25 %, pero no sabemos *cuándo* ocurrieron |
+| 6 | **Más ejemplos etiquetados de la cohorte foco** (por ejemplo, más períodos históricos) | La curva de aprendizaje de la cohorte sigue subiendo con el modelo de alta capacidad | +0.019 AUC entre 7 k y 15 k filas de la cohorte |
+
+Los puntos 1–4 agregan **información nueva**, lo cual vale más que agregar más filas del mismo tipo: la curva de aprendizaje global (3.2) muestra que más filas con las mismas columnas aportan poco, mientras que el análisis de FN muestra errores que ninguna combinación de las columnas actuales puede separar.
