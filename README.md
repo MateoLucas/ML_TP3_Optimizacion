@@ -614,3 +614,76 @@ Conclusiones:
 * **Agregar la regresión logística al voting empeora el resultado.** Con pesos iguales, un modelo 0.03 AUC peor arrastra el promedio. El **stacking**, en cambio, aprende a darle poco peso y recupera el nivel del voting. Ese es justamente el valor del meta-modelo.
 * **Costo:** el voting tarda ~10× más en entrenar que un LightGBM y el modelo serializado pasa de 9 MB a ~50 MB. El stacking cuesta ~50×.
 * **Decisión:** la mejora no justifica la complejidad, así que se sigue con LightGBM. La comparación final se cierra en 4.5, porque al ajustar el umbral de decisión las diferencias entre ensambles y LightGBM desaparecen.
+
+### 4.5 Estrategia 5 – Data-centered improvements
+
+**Script:** `python steps/04e_data_centered.py` (~4 min).
+
+**Justificación:** el Paso 3 mostró que el problema dominante son los **falsos negativos** (recall 0.74 en el baseline y 0.80 en LightGBM tuneado), concentrados en la cohorte foco, y que un tercio del dataset son duplicados. Las intervenciones siguientes cambian **los datos con los que se entrena** (o cómo se usan sus predicciones). Los folds de validación quedan intactos, así que la comparación contra LightGBM tuneado es directa.
+
+| intervención | motivación (del análisis previo) |
+|:--|:--|
+| **a.** `class_weight="balanced"` | desbalance 42/58 y exceso de FN: dar más peso a la clase "cancelada" |
+| **b.** **umbral de decisión optimizado para F1** | el umbral 0.5 no es el óptimo para F1 cuando las clases están desbalanceadas. Para cada fold k, el umbral se elige con las predicciones OOF de los *otros* 4 folds y se aplica al fold k, así la estimación del F1 no es optimista |
+| **c.** train deduplicado | ¿las copias de reservas en lote "sobre-pesan" esos patrones? Se deja una fila por grupo (con la etiqueta mayoritaria) |
+| **d.** train sin filas anómalas | las 290 reservas con 0 procesos o 0 horas GPU detectadas en el EDA |
+| **e.** peso ×2 / ×3 a la cohorte foco | que el modelo dedique más capacidad a `cloud_marketplace & no_commitment` |
+
+**Resultados:**
+
+| intervención | ROC-AUC | F1 | precision | recall | Δ AUC | Δ F1 | folds mejora F1 | F1 foco |
+|:--|:--|:--|--:|--:|--:|--:|--:|--:|
+| LightGBM tuneado (referencia) | 0.9406 ± 0.0043 | 0.8242 ± 0.0141 | 0.854 | 0.796 | – | – | – | 0.720 |
+| a. `class_weight = balanced` | 0.9396 ± 0.0058 | 0.8246 ± 0.0158 | 0.827 | 0.823 | −0.0010 | +0.0003 | 3/5 | 0.731 |
+| **b. umbral ajustado (≈ 0.41)** | **0.9406 ± 0.0043** | **0.8321 ± 0.0075** | 0.820 | **0.845** | 0 | **+0.0079** | **4/5** | **0.739** |
+| c. train deduplicado | 0.9392 ± 0.0046 | 0.8186 ± 0.0095 | 0.853 | 0.787 | −0.0014 | −0.0057 | 0/5 | 0.713 |
+| d. train sin filas anómalas | 0.9402 ± 0.0045 | 0.8233 ± 0.0137 | 0.850 | 0.798 | −0.0004 | −0.0009 | 1/5 | 0.722 |
+| e. peso ×2 a la cohorte foco | 0.9398 ± 0.0049 | 0.8204 ± 0.0135 | 0.850 | 0.793 | −0.0008 | −0.0038 | 1/5 | 0.718 |
+| e'. peso ×3 a la cohorte foco | 0.9392 ± 0.0047 | 0.8206 ± 0.0134 | 0.852 | 0.792 | −0.0014 | −0.0036 | 2/5 | 0.716 |
+
+![umbral](reports/figures/04e_umbral.png)
+
+Interpretación:
+
+* **El umbral ajustado es la intervención más efectiva para F1:** +0.008, mejora en 4 de 5 folds y **reduce a la mitad la variabilidad entre folds** (std 0.014 → 0.0075). Bajar el umbral de 0.5 a 0.41 cambia ~3 puntos de precision (0.854 → 0.820) por ~5 puntos de recall (0.796 → 0.845), que era justo el déficit diagnosticado. El umbral elegido es muy estable entre folds (0.39–0.41). El AUC no cambia porque no depende del umbral.
+* `class_weight="balanced"` desplaza las probabilidades en la misma dirección (recall 0.82), pero lo hace "a ciegas", sin optimizar el punto de operación, y empeora levemente el ranking (AUC −0.001).
+* **Deduplicar el train empeora** (−0.006 F1, 0/5 folds). Los duplicados son información real: el tamaño del lote es una señal de cancelación masiva. Esto confirma la decisión del Paso 1 de mantenerlos y controlar su efecto sólo en la evaluación.
+* Sacar las filas anómalas es neutro (son 0.8 % del train). **Sobre-ponderar la cohorte foco no ayuda:** el modelo ya le dedica la capacidad que puede, y el límite está en la información disponible (FN indistinguibles, ver 3.1 y 3.4), no en cuánto peso tiene en la función de pérdida.
+
+**¿Mejora global o específica?** Efecto del umbral 0.41 por cohorte (OOF, tabla `04e_umbral_por_cohorte`):
+
+| cohorte | F1 @0.5 | F1 @0.41 | FNR @0.5 → @0.41 | FPR @0.5 → @0.41 |
+|:--|--:|--:|:--|:--|
+| cloud_marketplace | 0.720 | **0.739** | 0.300 → 0.225 | 0.148 → 0.196 |
+| managed_account | 0.894 | 0.909 | 0.132 → 0.092 | 0.057 → 0.068 |
+| research_consortium | 0.970 | 0.967 | 0.039 → 0.028 | 0.045 → 0.080 |
+| independent_client | 0.396 | 0.427 | 0.730 → 0.686 | 0.018 → 0.029 |
+| service_tier = basic | 0.721 | 0.743 | 0.293 → 0.215 | 0.159 → 0.205 |
+| GPU_T4 | 0.717 | 0.731 | 0.305 → 0.237 | 0.133 → 0.176 |
+
+El umbral mejora el F1 sobre todo en las cohortes con más FN (marketplace, basic, GPU_T4, independent). En `research_consortium`, que ya era casi perfecta, lo deja igual o apenas peor.
+
+**Umbral ajustado también en los ensambles de 4.4** (`04e_umbral_ensambles`):
+
+| modelo | F1 @0.5 | F1 @umbral ajustado |
+|:--|:--|:--|
+| **LightGBM (tuneado)** | 0.8242 ± 0.0141 | **0.8321 ± 0.0075** |
+| Soft voting (LGBM + XGB + RF) | 0.8262 ± 0.0116 | **0.8321 ± 0.0096** |
+| Stacking | 0.8260 ± 0.0109 | 0.8312 ± 0.0091 |
+| Bagging de semillas LightGBM | 0.8243 ± 0.0131 | 0.8268 ± 0.0126 |
+| Random Forest (tuneado) | 0.8222 ± 0.0127 | 0.8290 ± 0.0091 |
+
+Con el umbral optimizado, **la ventaja de los ensambles desaparece**: LightGBM y el soft voting empatan en F1 (0.8321), y LightGBM tiene menor varianza. Esto cierra la decisión de 4.4 a favor del modelo individual.
+
+### Resumen del Paso 4
+
+| estrategia | ¿se adopta? | efecto en CV (ROC-AUC / F1) |
+|:--|:--|:--|
+| 4.1 Feature engineering + selección | **sí**: 30 variables (19 eliminadas) + target encoding | muy útil para modelos simples (LogReg +0.010 AUC). Neutro para LightGBM, pero lo simplifica |
+| 4.2 Model selection | **sí**: LightGBM | **+0.029 / +0.031** (la mayor ganancia) |
+| 4.3 Hyperparameter optimization | **sí**: Optuna TPE | +0.002 / +0.003 |
+| 4.4 Ensembles | no (empata al ajustar el umbral, 10× más costoso) | +0.0007 / +0.002 sin umbral, 0 con umbral |
+| 4.5 Data-centered: umbral 0.41 | **sí** | 0 / **+0.008** |
+| 4.5 Data-centered: class weight, dedup, quitar anomalías, pesos por cohorte | no | ≤ 0 |
+
+**Modelo final elegido** (`models/final_config.json`): **LightGBM con hiperparámetros de Optuna TPE, sobre el pipeline de FE + target encoding + 30 variables seleccionadas, con umbral de decisión 0.41.** CV en train: **ROC-AUC 0.9406 ± 0.0043, F1 0.8321 ± 0.0075.**

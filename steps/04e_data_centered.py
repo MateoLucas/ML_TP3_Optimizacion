@@ -172,3 +172,17 @@ for col in ["client_type", "service_tier", "reserved_gpu_type"]:
     m.insert(0, "variable", col)
     coh_rows.append(m.rename(columns={col: "valor"}))
 save_table(pd.concat(coh_rows), "04e_umbral_por_cohorte")
+
+# ------------------------------------------------ umbral ajustado también sobre los ensambles de 4.4
+# (las predicciones OOF de los ensambles se guardaron en el Paso 4.4)
+ens = np.load(MODEL_DIR / "oof_ensembles.npz")
+ens_rows = []
+for name in ens.files:
+    oof = ens[name]
+    f1s_e, _, _, ths_e = threshold_eval(name, oof)
+    f05 = [f1_score(y[va], oof[va] >= 0.5) for _, va in splits]
+    ens_rows.append({"modelo": name, "F1 umbral 0.5": f"{np.mean(f05):.4f} ± {np.std(f05, ddof=1):.4f}",
+                     "F1 umbral ajustado": f"{f1s_e.mean():.4f} ± {f1s_e.std(ddof=1):.4f}",
+                     "umbral medio": round(ths_e.mean(), 2)})
+save_table(pd.DataFrame(ens_rows), "04e_umbral_ensambles")
+print(pd.DataFrame(ens_rows).to_string(index=False))

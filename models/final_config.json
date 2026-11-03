@@ -1,0 +1,9 @@
+{
+  "name": "LightGBM tuneado + FE + selección de variables + umbral 0.41",
+  "type": "lgbm",
+  "threshold": 0.41,
+  "cv_table": "04e_data_centered_raw.csv",
+  "cv_row": "LightGBM tuneado (referencia)",
+  "cv_row_threshold": "b. umbral ajustado para F1 (≈0.41)",
+  "extra_steps": []
+}
