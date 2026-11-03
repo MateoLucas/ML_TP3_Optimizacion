@@ -572,3 +572,45 @@ Conclusiones:
 * La ganancia es mucho menor que la del cambio de familia de modelo (+0.029). Una vez elegido un modelo con la capacidad adecuada, el tuning aporta un ajuste fino.
 * **Riesgo de sobreajustar la CV:** después de 30+30 evaluaciones sobre los mismos folds, el mejor valor tiene un sesgo optimista (la ganancia de +0.002 es comparable a ese sesgo). Por eso el Paso 5 evalúa en el test una única vez.
 * **Modelo elegido:** LightGBM con los parámetros de TPE (mejor AUC y mejor F1). XGBoost y RF tuneados se usan como miembros de los ensambles de 4.4.
+
+### 4.4 Estrategia 4 – Ensemble learning
+
+**Script:** `python steps/04d_ensembles.py` (~8 min). Implementación de los ensambles propios en `tp3/ensembles.py`.
+
+**Justificación:** LightGBM, XGBoost y RF tuneados tienen rendimientos muy parecidos (AUC 0.938–0.941) pero aprenden de forma distinta (boosting por hoja, boosting por nivel, bagging). Si sus errores no coinciden del todo, combinarlos reduce la varianza. La regresión logística con FE es mucho peor, pero también es el modelo más distinto, lo que la vuelve una candidata a aportar diversidad.
+
+**Ensambles evaluados:**
+
+| ensamble | qué hace |
+|:--|:--|
+| Bagging de semillas | promedia 5 LightGBM idénticos entrenados con distinta semilla (varía el `subsample`/`colsample`) |
+| Soft voting | promedia las probabilidades de LGBM + XGB + RF (y una variante + LR) |
+| Stacking | una regresión logística aprende a combinar los `logit` de las probabilidades de LGBM + XGB + RF + LR. Las predicciones con las que se entrena el meta-modelo se generan con un **CV interno también agrupado por duplicados** (`GroupStackingClassifier`). Con el `StackingClassifier` estándar y `KFold`, las copias de una reserva quedarían repartidas entre folds internos y el meta-modelo sobrevaloraría al miembro que más memoriza (RF) |
+
+**Diversidad.** Correlación entre los vectores de error (OOF) de los miembros:
+
+<img src="reports/figures/04d_correlacion_errores.png" width="420">
+
+Los tres modelos de árboles se equivocan **en casi las mismas reservas** (correlación 0.82–0.88). La regresión logística es más diversa (0.61–0.64), pero mucho peor. Esto anticipa que el margen de mejora de los ensambles es chico: los errores restantes son mayormente los FN "indistinguibles" del Paso 3, que ningún modelo puede separar.
+
+**Resultados** (Δ pareado contra LightGBM tuneado, mismos folds):
+
+| modelo | ROC-AUC | F1 | Δ AUC | Δ F1 | folds que mejora | AUC foco | F1 foco | fit/fold |
+|:--|:--|:--|--:|--:|--:|--:|--:|--:|
+| LightGBM (tuneado) | 0.9406 ± 0.0043 | 0.8242 ± 0.0141 | – | – | – | 0.876 | 0.720 | 4 s |
+| XGBoost (tuneado) | 0.9398 ± 0.0053 | 0.8212 ± 0.0146 | −0.0008 | −0.0030 | 1/5 | 0.876 | 0.716 | 6 s |
+| Random Forest (tuneado) | 0.9384 ± 0.0052 | 0.8222 ± 0.0127 | −0.0022 | −0.0020 | 1/5 | 0.872 | 0.720 | 30 s |
+| Regresión Logística + FE | 0.9079 ± 0.0090 | 0.7791 ± 0.0060 | −0.0327 | −0.0452 | 0/5 | 0.821 | 0.648 | 1 s |
+| Bagging de semillas LightGBM (×5) | 0.9410 ± 0.0045 | 0.8243 ± 0.0131 | +0.0005 | +0.0001 | 4/5 | 0.877 | 0.720 | 19 s |
+| **Soft voting (LGBM + XGB + RF)** | **0.9413 ± 0.0048** | **0.8262 ± 0.0116** | **+0.0007** | **+0.0020** | 4/5 | 0.878 | 0.724 | 39 s |
+| Soft voting (LGBM + XGB + RF + LR) | 0.9392 ± 0.0048 | 0.8239 ± 0.0120 | −0.0014 | −0.0004 | 1/5 | 0.875 | 0.721 | 39 s |
+| Stacking (LGBM + XGB + RF + LR → LogReg) | 0.9412 ± 0.0049 | 0.8260 ± 0.0109 | +0.0006 | +0.0018 | 4/5 | 0.878 | 0.725 | 204 s |
+
+![ensambles](reports/figures/04d_ensembles.png)
+
+Conclusiones:
+
+* Los mejores ensambles (soft voting de árboles y stacking) superan al LightGBM individual en 4 de 5 folds, pero por **muy poco: +0.0007 AUC y +0.002 F1**, menos de un quinto del desvío entre folds. Con errores tan correlacionados, promediar modelos no agrega información.
+* **Agregar la regresión logística al voting empeora el resultado.** Con pesos iguales, un modelo 0.03 AUC peor arrastra el promedio. El **stacking**, en cambio, aprende a darle poco peso y recupera el nivel del voting. Ese es justamente el valor del meta-modelo.
+* **Costo:** el voting tarda ~10× más en entrenar que un LightGBM y el modelo serializado pasa de 9 MB a ~50 MB. El stacking cuesta ~50×.
+* **Decisión:** la mejora no justifica la complejidad, así que se sigue con LightGBM. La comparación final se cierra en 4.5, porque al ajustar el umbral de decisión las diferencias entre ensambles y LightGBM desaparecen.

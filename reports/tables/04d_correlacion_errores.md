@@ -1,0 +1,6 @@
+| index                    |   LightGBM (tuneado) |   XGBoost (tuneado) |   Random Forest (tuneado) |   Regresión Logística + FE |
+|:-------------------------|---------------------:|--------------------:|--------------------------:|---------------------------:|
+| LightGBM (tuneado)       |               1.0000 |              0.8839 |                    0.8160 |                     0.6229 |
+| XGBoost (tuneado)        |               0.8839 |              1.0000 |                    0.8228 |                     0.6096 |
+| Random Forest (tuneado)  |               0.8160 |              0.8228 |                    1.0000 |                     0.6408 |
+| Regresión Logística + FE |               0.6229 |              0.6096 |                    0.6408 |                     1.0000 |
