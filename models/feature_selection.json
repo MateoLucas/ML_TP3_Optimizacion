@@ -1,0 +1,24 @@
+{
+  "selection": "sin las 19 de importancia ≤ 0.0002",
+  "drop": [
+    "previous_job_cancellations",
+    "returning_client",
+    "execution_day",
+    "is_empty_workload",
+    "organization_id",
+    "num_auxiliary_processes",
+    "peak_fraction",
+    "reserved_gpu_type",
+    "has_agent",
+    "total_processes",
+    "offpeak_gpu_hours",
+    "num_primary_processes",
+    "log_lead_time",
+    "num_background_processes",
+    "has_special_requests",
+    "has_history",
+    "high_value_client",
+    "has_organization",
+    "peak_gpu_hours"
+  ]
+}

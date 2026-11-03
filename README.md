@@ -14,6 +14,7 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 - [Paso 1 – Preprocesamiento y análisis exploratorio](#paso-1--preprocesamiento-y-análisis-exploratorio)
 - [Paso 2 – Model-centered ML: baseline, validación cruzada y métricas](#paso-2--model-centered-ml-baseline-validación-cruzada-y-métricas)
 - [Paso 3 – Error analysis y enfoque data-centered](#paso-3--error-analysis-y-enfoque-data-centered)
+- [Paso 4 – Optimización del sistema de ML](#paso-4--optimización-del-sistema-de-ml)
 
 ---
 
@@ -402,3 +403,72 @@ Qué datos adicionales incorporaríamos, en orden de prioridad, y por qué esper
 | 6 | **Más ejemplos etiquetados de la cohorte foco** (por ejemplo, más períodos históricos) | La curva de aprendizaje de la cohorte sigue subiendo con el modelo de alta capacidad | +0.019 AUC entre 7 k y 15 k filas de la cohorte |
 
 Los puntos 1–4 agregan **información nueva**, lo cual vale más que agregar más filas del mismo tipo: la curva de aprendizaje global (3.2) muestra que más filas con las mismas columnas aportan poco, mientras que el análisis de FN muestra errores que ninguna combinación de las columnas actuales puede separar.
+
+---
+
+## Paso 4 – Optimización del sistema de ML
+
+El Paso 3 dejó un diagnóstico claro:
+
+1. el baseline está **limitado por el modelo** (alto sesgo);
+2. los errores se concentran en `cloud_marketplace & no_commitment`;
+3. hay muchos **falsos negativos** (recall 0.74).
+
+A partir de eso se implementaron y evaluaron **cinco estrategias**, en el orden en que el diagnóstico las motiva. Todas se evalúan con **los mismos 5 folds agrupados** del Paso 2 y se comparan contra el baseline (**ROC-AUC 0.910 / F1 0.790**). Además de las métricas globales se reportan las métricas dentro de la **cohorte foco**, para ver si la mejora es global o específica.
+
+### 4.1 Estrategia 1 – Feature engineering y selección de variables
+
+**Script:** `python steps/04a_feature_engineering.py` (~3.5 min). Código de las features en `tp3/features.py`.
+
+**Justificación:** según 3.3, dentro de la cohorte foco las señales fuertes son constantes y el modelo tiene que apoyarse en señales débiles e interacciones. Las features nuevas buscan explicitar esas señales, para que modelos de baja capacidad (árbol poco profundo, modelo lineal) puedan usarlas.
+
+**Features nuevas.** Todas se calculan dentro del `Pipeline`. Las que necesitan estadísticos se ajustan sólo con el fold de train.
+
+| feature | idea |
+|:--|:--|
+| `gpu_type_changed` | la GPU asignada difiere de la reservada (6 % de cancelación vs 45 %) |
+| `prev_cancel_ratio`, `has_history` | historial normalizado: cancelaciones / (cancelaciones + éxitos) |
+| `has_agent`, `has_organization`, `is_domestic` | indicadores binarios de los patrones del EDA |
+| `log_lead_time` | anticipación en escala logarítmica (relación creciente y cóncava) |
+| `total_cost`, `cost_per_process`, `peak_fraction` | tamaño económico de la reserva y composición de las horas |
+| `relative_cost` *(aprendida)* | costo / mediana del costo para el mismo tipo de GPU y mes: ¿la reserva está cara o barata respecto del mercado? |
+| `region_freq`, `agent_freq`, `organization_freq` *(aprendidas)* | frecuencia de la región / agente / organización en train (tamaño del broker) |
+| `execution_dayofweek`, `execution_dayofyear` | calendario |
+| `is_empty_workload`, `has_special_requests` | anomalías del EDA y pedidos especiales en formato binario |
+| **Target encoding** de `client_region`, `orchestration_agent_id`, `organization_id` | `TargetEncoder` de sklearn, que hace *cross-fitting* interno y así evita el leakage del target. Reemplaza el one-hot de 149 países y 194 agentes por una columna con la tasa de cancelación (suavizada) de cada categoría |
+
+**Resultados** (mismos folds):
+
+| modelo / features | ROC-AUC | F1 | AUC cohorte foco | F1 cohorte foco |
+|:--|:--|:--|--:|--:|
+| Árbol d=8, baseline | 0.9100 ± 0.0035 | 0.7901 ± 0.0061 | 0.810 | 0.643 |
+| Árbol d=8 + FE (IDs one-hot) | 0.9111 ± 0.0038 | 0.7896 ± 0.0069 | 0.815 | 0.656 |
+| Árbol d=8 + FE + target enc. | 0.9070 ± 0.0065 | 0.7839 ± 0.0110 | 0.815 | 0.658 |
+| Regresión logística, baseline | 0.8982 ± 0.0055 | 0.7627 ± 0.0098 | 0.799 | 0.621 |
+| **Regresión logística + FE + target enc.** | **0.9079 ± 0.0090** | **0.7791 ± 0.0060** | **0.821** | **0.648** |
+| LightGBM de referencia, baseline | 0.9384 ± 0.0051 | 0.8208 ± 0.0116 | 0.876 | 0.721 |
+| LightGBM de referencia + FE + target enc. | 0.9386 ± 0.0046 | 0.8212 ± 0.0144 | 0.874 | 0.719 |
+
+![efecto FE](reports/figures/04a_feature_engineering.png)
+
+Interpretación:
+
+* El FE **ayuda mucho al modelo lineal**: +0.010 AUC y +0.016 F1, y +0.022 AUC dentro de la cohorte foco. Las features nuevas (ratio de historial, frecuencias, target encoding, cambio de GPU) le dan relaciones no lineales que por sí solo no puede representar.
+* Al **árbol d=8** le aporta poco: +0.001 AUC global, aunque sube el F1 de la cohorte foco de 0.643 a 0.656. El target encoding le resta un poco. Con un árbol poco profundo, una columna continua con la tasa de cancelación por agente es más ruidosa que los indicadores one-hot de los agentes grandes.
+* A **LightGBM** el FE prácticamente no le cambia nada (+0.0002 AUC, dentro del ruido). El boosting ya aprende esas interacciones y transformaciones solo. **Conclusión: el FE es una estrategia útil para modelos de baja capacidad, pero el salto grande (+0.028 AUC) viene de cambiar la familia de modelo**, como anticipaban las curvas de aprendizaje. Esto motiva la estrategia 2.
+
+**Selección de variables:** *permutation importance* sobre los folds de validación. En cada fold se entrena LightGBM + FE, se permuta cada columna (3 repeticiones) en el fold de validación y se mide la caída de AUC.
+
+![permutation importance](reports/figures/04a_permutation_importance.png)
+
+* Las más importantes son `reservation_commitment`, `client_region`, `orchestration_agent_id`, `special_resource_requests`, `hours_before_execution` y `workload_profile`. Tres features nuevas entran en el top 10: `prev_cancel_ratio`, `agent_freq` y `gpu_type_changed`.
+* Varias variables tienen importancia ~0 porque son **redundantes** con otras: `log_lead_time` con `hours_before_execution`, `previous_job_cancellations` con `prev_cancel_ratio`, los componentes de procesos y horas con sus totales, `has_*` con sus versiones de frecuencia. La permutation importance reparte (y subestima) la importancia de variables correlacionadas, así que la selección se valida re-entrenando:
+
+| subconjunto | n features | ROC-AUC | F1 | Δ AUC pareado vs todas |
+|:--|--:|:--|:--|:--|
+| todas | 49 | 0.9386 ± 0.0046 | 0.8212 ± 0.0144 | – |
+| **sin las 19 de importancia ≤ 0.0002** | **30** | **0.9383 ± 0.0051** | **0.8216 ± 0.0101** | **−0.0002 ± 0.0018** |
+| top 20 | 20 | 0.9373 ± 0.0065 | 0.8215 ± 0.0105 | −0.0013 ± 0.0030 |
+| top 12 | 12 | 0.9291 ± 0.0082 | 0.8052 ± 0.0160 | −0.0095 ± 0.0038 |
+
+Regla de decisión: el subconjunto más chico que no pierda más de 0.001 de AUC en la comparación **pareada** fold a fold. **Se eliminan 19 variables (49 → 30) sin pérdida de rendimiento** (lista en `models/feature_selection.json`). Eso da un modelo más simple, más rápido y con menos dependencias de datos de entrada. Por debajo de 20 variables el rendimiento cae claramente. La selección se hizo con los mismos folds que la evaluación, así que la estimación puede ser levemente optimista. El test final (Paso 5) lo controla.
