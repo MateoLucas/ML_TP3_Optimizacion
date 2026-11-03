@@ -6,7 +6,6 @@
 
 Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Optimización de Modelos de ML..pdf`](TP3.%20Optimizaci%C3%B3n%20de%20Modelos%20de%20ML..pdf)) y funciona también como guía paso a paso: cada sección dice qué script se corrió, qué decisiones se tomaron y por qué, y qué resultados salieron. Cada paso se commiteó por separado, así que el historial de git sigue el mismo orden.
 
-
 ### Resumen
 
 | | Baseline (Árbol de decisión, depth 8) | **Modelo final** (LightGBM tuneado + FE + umbral 0.41) |
@@ -73,7 +72,7 @@ python steps/04b_model_selection.py             # Paso 4.2 (~6 min)
 python steps/04c_hyperparameter_optimization.py # Paso 4.3 (~25 min, reanudable)
 python steps/04d_ensembles.py                   # Paso 4.4 (~8 min)
 python steps/04e_data_centered.py               # Paso 4.5 (~4 min)
-python steps/05_final_model.py                  # Paso 5   (~2 min)
+python steps/05_final_model.py                  # Paso 5   (~3 min)
 ```
 
 (tiempos con 4 cores). Cada paso lee los resultados del anterior que necesita desde `models/` (`baseline.json`, `feature_selection.json`, `hpo_params.json`, `final_config.json`).
@@ -719,7 +718,7 @@ Con el umbral optimizado, **la ventaja de los ensambles desaparece**: LightGBM y
 
 ## Paso 5 – Modelo final y función predictora
 
-**Script:** `python steps/05_final_model.py` (~2 min) → `reports/tables/05_*`, `reports/figures/05_*`, `models/final_model.joblib`.
+**Script:** `python steps/05_final_model.py` (~3 min) → `reports/tables/05_*`, `reports/figures/05_*`, `models/final_model.joblib`.
 
 ### 5.1 Estrategia final
 

@@ -86,6 +86,21 @@ cv_vs_test = pd.DataFrame([
 save_table(cv_vs_test, "05_cv_vs_test")
 print(cv_vs_test.to_string(index=False))
 
+# referencia: misma evaluación con KFold SIN agrupar (las copias de una reserva quedan
+# repartidas entre train y validación -> mide "memoria", no generalización)
+from sklearn.metrics import f1_score  # noqa: E402
+from sklearn.model_selection import StratifiedKFold  # noqa: E402
+
+from tp3.evaluation import cross_validate  # noqa: E402
+
+skf = StratifiedKFold(5, shuffle=True, random_state=RANDOM_STATE)
+folds_ng, oof_ng = cross_validate(build_final_model(cfg), Xtr, ytr, duplicate_groups(train), cv=skf, n_jobs=5)
+f1_ng = [f1_score(ytr[va], oof_ng[va] >= THR) for _, va in skf.split(Xtr, ytr)]
+save_table(pd.DataFrame([{
+    "esquema": "KFold estratificado SIN agrupar (duplicados repartidos entre train y validación)",
+    "roc_auc": f"{folds_ng.val_roc_auc.mean():.4f} ± {folds_ng.val_roc_auc.std():.4f}",
+    f"f1 (umbral {THR})": f"{np.mean(f1_ng):.4f} ± {np.std(f1_ng, ddof=1):.4f}"}]), "05_cv_sin_agrupar")
+
 # matrices de confusión
 fig, axes = plt.subplots(1, 2, figsize=(8, 3.5))
 for ax, (name, p, t) in zip(axes, [("Baseline", p_base, 0.5), ("Final", p_final, THR)]):
