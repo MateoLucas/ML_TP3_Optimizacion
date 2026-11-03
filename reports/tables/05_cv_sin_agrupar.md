@@ -1,0 +1,3 @@
+| esquema                                                                          | roc_auc         | f1 (umbral 0.41)   |
+|:---------------------------------------------------------------------------------|:----------------|:-------------------|
+| KFold estratificado SIN agrupar (duplicados repartidos entre train y validación) | 0.9579 ± 0.0023 | 0.8635 ± 0.0049    |

@@ -6,6 +6,21 @@
 
 Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Optimización de Modelos de ML..pdf`](TP3.%20Optimizaci%C3%B3n%20de%20Modelos%20de%20ML..pdf)) y funciona también como guía paso a paso: cada sección dice qué script se corrió, qué decisiones se tomaron y por qué, y qué resultados salieron. Cada paso se commiteó por separado, así que el historial de git sigue el mismo orden.
 
+
+### Resumen
+
+| | Baseline (Árbol de decisión, depth 8) | **Modelo final** (LightGBM tuneado + FE + umbral 0.41) |
+|:--|--:|--:|
+| ROC-AUC (test) | 0.916 | **0.946** [IC95 % 0.935 – 0.955] |
+| F1 clase "cancelada" (test) | 0.795 | **0.836** [IC95 % 0.808 – 0.860] |
+| Recall (test) | 0.746 | **0.856** |
+| F1 en la cohorte problemática `cloud_marketplace & no_commitment` (test) | 0.645 | **0.736** |
+
+* Se eliminaron 2 columnas con **leakage** (`execution_status`, `execution_status_date`) y la evaluación se hizo con **splits agrupados por duplicados** (33 % del dataset son filas idénticas).
+* El **análisis de errores** mostró que el 72 % de los errores del baseline se concentra en una cohorte (`cloud_marketplace` sin compromiso contractual), dominada por falsos negativos. Las **curvas de aprendizaje** mostraron que el sistema estaba limitado por el modelo, no por la cantidad de datos.
+* De las 5 estrategias de optimización, la que más aportó fue **cambiar la familia de modelo** (+0.029 AUC). Le siguen **ajustar el umbral de decisión** (+0.008 F1) y el **tuning de hiperparámetros** (+0.002 AUC). Los ensambles y el resto de las intervenciones data-centered no superaron al modelo final.
+* Función predictora: [`predictor/predictor_v1_Grupo_X.py`](predictor/predictor_v1_Grupo_X.py) (Paso 5.6).
+
 ---
 
 ## Índice
@@ -15,6 +30,7 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 - [Paso 2 – Model-centered ML: baseline, validación cruzada y métricas](#paso-2--model-centered-ml-baseline-validación-cruzada-y-métricas)
 - [Paso 3 – Error analysis y enfoque data-centered](#paso-3--error-analysis-y-enfoque-data-centered)
 - [Paso 4 – Optimización del sistema de ML](#paso-4--optimización-del-sistema-de-ml)
+- [Paso 5 – Modelo final y función predictora](#paso-5--modelo-final-y-función-predictora)
 
 ---
 
@@ -29,12 +45,15 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 │   ├── data.py                     # carga, limpieza determinística, split train/test agrupado
 │   ├── preprocessing.py            # ColumnTransformer (imputación, one-hot, escalado)
 │   ├── evaluation.py               # k-fold CV, métricas, análisis por cohortes
-│   └── plotting.py                 # estilo común de figuras
+│   ├── plotting.py                 # estilo común de figuras
+│   ├── features.py                 # feature engineering (Paso 4.1)
+│   ├── ensembles.py                # stacking agrupado y bagging de semillas (Paso 4.4)
+│   └── final.py                    # construcción del modelo final desde models/final_config.json
 ├── steps/                          # un script por paso del TP (se corren en orden)
 ├── reports/figures/                # figuras generadas (se muestran en este README)
 ├── reports/tables/                 # tablas de resultados (.csv y .md)
-├── models/                         # modelo final serializado
-└── predictor/                      # función predictora para entregar
+├── models/                         # configuraciones elegidas, OOFs y modelo final serializado
+└── predictor/predictor_v1_Grupo_X.py   # función predictora para entregar
 ```
 
 **Instalación**
@@ -46,10 +65,18 @@ pip install -r requirements.txt
 **Ejecución:** cada paso es un script independiente que lee el CSV, regenera sus figuras y tablas y las guarda en `reports/`:
 
 ```bash
-python steps/01_eda.py
+python steps/01_eda.py                          # Paso 1   (~1 min)
+python steps/02_baseline.py                     # Paso 2   (~8 min)
+python steps/03_error_analysis.py               # Paso 3   (~3 min)
+python steps/04a_feature_engineering.py         # Paso 4.1 (~4 min)
+python steps/04b_model_selection.py             # Paso 4.2 (~6 min)
+python steps/04c_hyperparameter_optimization.py # Paso 4.3 (~25 min, reanudable)
+python steps/04d_ensembles.py                   # Paso 4.4 (~8 min)
+python steps/04e_data_centered.py               # Paso 4.5 (~4 min)
+python steps/05_final_model.py                  # Paso 5   (~2 min)
 ```
 
-(los comandos de los pasos siguientes se indican en cada sección).
+(tiempos con 4 cores). Cada paso lee los resultados del anterior que necesita desde `models/` (`baseline.json`, `feature_selection.json`, `hpo_params.json`, `final_config.json`).
 
 **Reproducibilidad:** semilla fija (`RANDOM_STATE = 42`) en splits y modelos. Todos los scripts toman los datos de `tp3.data.get_data()`, así el conjunto de test es siempre el mismo y no se usa en ningún paso salvo la evaluación final (Paso 5).
 
@@ -687,3 +714,121 @@ Con el umbral optimizado, **la ventaja de los ensambles desaparece**: LightGBM y
 | 4.5 Data-centered: class weight, dedup, quitar anomalías, pesos por cohorte | no | ≤ 0 |
 
 **Modelo final elegido** (`models/final_config.json`): **LightGBM con hiperparámetros de Optuna TPE, sobre el pipeline de FE + target encoding + 30 variables seleccionadas, con umbral de decisión 0.41.** CV en train: **ROC-AUC 0.9406 ± 0.0043, F1 0.8321 ± 0.0075.**
+
+---
+
+## Paso 5 – Modelo final y función predictora
+
+**Script:** `python steps/05_final_model.py` (~2 min) → `reports/tables/05_*`, `reports/figures/05_*`, `models/final_model.joblib`.
+
+### 5.1 Estrategia final
+
+| componente | elección | origen |
+|:--|:--|:--|
+| limpieza | quitar `execution_status` / `execution_status_date` (leakage), IDs como categorías, `NaN` → categoría propia | Paso 1 |
+| features | 14 features nuevas + 4 aprendidas (frecuencias, costo relativo) + target encoding de región / agente / organización, con 30 variables finales tras la selección | 4.1 |
+| modelo | **LightGBM** | 4.2 |
+| hiperparámetros | Optuna TPE: 381 árboles, `learning_rate` 0.031, 101 hojas, `min_child_samples` 17, `subsample` 0.74, `colsample_bytree` 0.92 | 4.3 |
+| umbral de decisión | **0.41** (maximiza F1, estable entre folds) | 4.5 |
+
+Se eligió el modelo **más simple entre los que empatan en rendimiento**. El soft voting de 3 modelos tenía el mismo F1 con umbral ajustado, pero tarda 10× más en entrenar y pesa 50 MB en lugar de 2 MB.
+
+### 5.2 Evaluación en test (hold-out agrupado, usado una sola vez)
+
+Baseline y modelo final se re-entrenaron con **todo el train** (38 274 filas) y se evaluaron sobre las **9 568 reservas de test**, que ningún paso anterior había visto. Los intervalos de confianza salen de **1 000 réplicas bootstrap por grupos de duplicados**. Las réplicas son pareadas: baseline y final se evalúan sobre las mismas filas re-muestreadas.
+
+| métrica | baseline (test) | **final (test)** | IC 95 % final | Δ final − baseline | IC 95 % Δ |
+|:--|--:|--:|:--|--:|:--|
+| **ROC-AUC** | 0.9160 | **0.9460** | [0.9346, 0.9550] | **+0.0299** | [+0.0234, +0.0371] |
+| **F1** | 0.7954 | **0.8357** | [0.8083, 0.8600] | **+0.0403** | [+0.0269, +0.0582] |
+| accuracy | 0.8400 | 0.8596 | [0.8441, 0.8742] | +0.0196 | [+0.0101, +0.0303] |
+| precision | 0.8522 | 0.8166 | [0.7821, 0.8478] | −0.0356 | [−0.0500, −0.0212] |
+| recall | 0.7457 | **0.8557** | [0.8306, 0.8778] | **+0.1100** | [+0.0883, +0.1372] |
+
+![matrices](reports/figures/05_matrices_confusion_test.png)
+
+* Las mejoras en ROC-AUC y F1 son **significativas**: los IC 95 % de la diferencia no incluyen el 0.
+* El modelo final **detecta 11 puntos más de cancelaciones** (recall 0.75 → 0.86) a cambio de 3.6 puntos de precision. Es el intercambio buscado desde el análisis de errores. En total comete **188 errores menos** que el baseline (1 531 → 1 343, −12 %).
+* Con umbral 0.5, el modelo final ya mejora todas las métricas sin perder precision (AUC 0.946, F1 0.832, precision 0.850, recall 0.813). El umbral 0.41 es una decisión de negocio a favor del recall que sube el F1 a 0.836. Si la operación valora más evitar falsas alarmas, se puede volver a 0.5 sin re-entrenar.
+
+### 5.3 Performance esperada en datos nuevos
+
+| métrica | CV en train (5 folds agrupados) | test (hold-out agrupado) |
+|:--|:--|--:|
+| ROC-AUC | 0.9406 ± 0.0043 | 0.9460 |
+| F1 (umbral 0.41) | 0.8321 ± 0.0075 | 0.8357 |
+| precision | 0.8201 ± 0.0076 | 0.8166 |
+| recall | 0.8445 ± 0.0079 | 0.8557 |
+
+El test confirma la CV: las diferencias están dentro de ~1 desvío y del IC bootstrap. No hay señales de que la selección de variables o el tuning hayan sobreajustado la CV. **La performance esperada en reservas nuevas es ROC-AUC ≈ 0.94–0.95 y F1 ≈ 0.83–0.84** (IC 95 % del test: AUC 0.935–0.955, F1 0.81–0.86). El modelo entregado se re-entrenó con train + test (47 842 filas), así que con 25 % más de datos se espera igual o apenas mejor según las curvas de aprendizaje.
+
+Esta estimación supone **reservas realmente nuevas**, que no son copias de reservas ya vistas. Si el conjunto con el que se evalúe el predictor comparte reservas duplicadas con nuestro dataset (por ejemplo, si sale de un split aleatorio de la misma base), el rendimiento observado va a ser **mayor**, porque el modelo reconoce esas reservas. Con un 5-fold **sin agrupar**, el mismo modelo obtiene **ROC-AUC 0.958 ± 0.002 y F1 0.864 ± 0.005** (`05_cv_sin_agrupar`). Ese número describe "memoria", no generalización, y por eso no se usó para decidir nada.
+
+### 5.4 ¿Qué cambios produjeron las mayores mejoras?
+
+Progresión del rendimiento en CV a medida que se incorporan las estrategias adoptadas:
+
+![contribución](reports/figures/05_contribucion_estrategias.png)
+
+| paso | ROC-AUC (CV) | F1 (CV) | Δ AUC | Δ F1 |
+|:--|--:|--:|--:|--:|
+| Baseline: Árbol d=8 | 0.9100 | 0.7901 | | |
+| 4.1 + feature engineering (mismo árbol) | 0.9111 | 0.7896 | +0.0011 | −0.0005 |
+| **4.2 LightGBM + FE + selección** | **0.9390** | **0.8215** | **+0.0279** | **+0.0319** |
+| 4.3 + hiperparámetros (Optuna) | 0.9406 | 0.8242 | +0.0016 | +0.0027 |
+| **4.5 + umbral 0.41** | 0.9406 | **0.8321** | 0 | **+0.0079** |
+
+1. **Model selection** (árbol → boosting) explica ~85 % de la mejora en AUC y ~75 % en F1. Es coherente con el diagnóstico de las curvas de aprendizaje: el sistema estaba **limitado por el modelo**.
+2. **Umbral de decisión** es la segunda en F1. No mejora el ranking (AUC), pero mueve el punto de operación hacia donde estaban los errores (FN).
+3. **Tuning** aporta un ajuste fino y consistente (5/5 folds).
+4. **Feature engineering** casi no mueve las métricas del modelo final, pero permitió eliminar 19 variables sin pérdida y es lo que más ayuda a modelos simples.
+5. Ensambles, re-ponderación por cohorte, deduplicación y limpieza de anomalías: **sin mejora** frente al modelo final.
+
+### 5.5 ¿Las mejoras fueron globales o específicas de subgrupos?
+
+F1 baseline → final por cohorte, en test:
+
+![por cohorte](reports/figures/05_mejora_por_cohorte.png)
+
+| cohorte (test) | n | F1 baseline | F1 final | Δ F1 | AUC baseline → final |
+|:--|--:|--:|--:|--:|:--|
+| **cloud_marketplace & no_commitment** (foco) | 4 687 | 0.645 | **0.736** | **+0.091** | 0.823 → 0.883 |
+| resto | 4 881 | 0.898 | 0.916 | +0.018 | 0.968 → 0.982 |
+| client_type = independent_client | 759 | 0.263 | 0.519 | **+0.256** | 0.706 → 0.842 |
+| client_type = managed_account | 2 018 | 0.923 | 0.935 | +0.011 | 0.985 → 0.991 |
+| client_type = research_consortium | 1 665 | 0.942 | 0.949 | +0.007 | 0.980 → 0.990 |
+| service_tier = basic | 1 230 | 0.622 | 0.707 | +0.085 | 0.828 → 0.868 |
+| service_tier = standard | 7 548 | 0.818 | 0.855 | +0.037 | 0.925 → 0.953 |
+| reserved_gpu_type = GPU_T1 | 7 478 | 0.829 | 0.858 | +0.029 | 0.934 → 0.958 |
+| reserved_gpu_type = GPU_T4 | 1 467 | 0.657 | 0.731 | +0.074 | 0.838 → 0.891 |
+| reservation_commitment = locked_allocation | 1 560 | 1.000 | 1.000 | 0 | – |
+| anticipación 0–7 h | 1 284 | 0.169 | 0.433 | **+0.264** | 0.723 → 0.835 |
+
+* **La mejora es global en dirección** (ninguna cohorte relevante empeora), **pero muy desigual en magnitud: se concentra en los subgrupos difíciles** que identificó el análisis de errores.
+  * La cohorte foco gana **+0.091 F1 y +0.060 AUC**. Ahí se produce el **61 % de los errores evitados** (114 de 188): los FN bajan de 736 a 371 y los FP suben de 341 a 592.
+  * Las cohortes con peor recall en el baseline son las que más mejoran: `independent_client` (+0.26 F1), reservas de último momento (+0.26), tier `basic` (+0.09) y GPUs minoritarias (`GPU_T4` +0.07, `T5` +0.14, `T2` +0.26, aunque estas últimas con n chico).
+  * Las cohortes que ya estaban resueltas (`locked_allocation`, `research_consortium`, `managed_account`) apenas cambian. No había margen.
+* La brecha entre la cohorte foco y el resto **se achicó pero no se cerró** (F1 0.74 vs 0.92). Como se anticipó en 3.3–3.4, cerrarla requiere **datos nuevos** (historial del cliente en el marketplace, señales de preparación del workload, dinámica de precios) más que otro modelo.
+
+### 5.6 Función predictora: `predictor_v1_Grupo_X()`
+
+Archivo: [`predictor/predictor_v1_Grupo_X.py`](predictor/predictor_v1_Grupo_X.py). Modelo: `models/final_model.joblib` (1.8 MB, LightGBM final re-entrenado con train + test). Configuración: `models/final_config.json` (incluye el umbral 0.41).
+
+* **Entrada:** ruta a un CSV o un `DataFrame` con las columnas de `gpu_resource_reservations.csv`. `canceled_job`, `execution_status` y `execution_status_date` pueden venir o no: se ignoran.
+* **Salida:** `np.ndarray` de 0/1 (1 = la reserva será cancelada), en el mismo orden que la entrada. Con `return_proba=True` devuelve la probabilidad de cancelación.
+* Aplica internamente la misma limpieza determinística del Paso 1 (`tp3.data.clean`) y el pipeline completo (FE, encoders, modelo), así que recibe los datos crudos.
+
+```python
+from predictor.predictor_v1_Grupo_X import predictor_v1_Grupo_X
+
+y_pred = predictor_v1_Grupo_X("nuevas_reservas.csv")   # array de 0/1
+proba  = predictor_v1_Grupo_X(df, return_proba=True)   # probabilidades
+```
+
+Desde la terminal:
+
+```bash
+python predictor/predictor_v1_Grupo_X.py nuevas_reservas.csv predicciones.csv
+```
+
+> Antes de enviar, reemplazar la **X** del nombre del archivo y de la función por el número de grupo. El predictor necesita las carpetas `tp3/` y `models/` del repositorio (el modelo serializado usa las clases de `tp3.features`).
