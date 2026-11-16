@@ -63,8 +63,8 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         X["cost_per_process"] = X.estimated_cost_per_hour / X.total_processes.fillna(1).clip(lower=1)
         date = pd.to_datetime(dict(year=X.execution_year, month=X.execution_month, day=X.execution_day),
                               errors="coerce")
-        X["execution_dayofweek"] = date.dt.dayofweek.fillna(0).astype(int)
-        X["execution_dayofyear"] = date.dt.dayofyear.fillna(1).astype(int)
+        X["execution_dayofweek"] = date.dt.day_of_week.fillna(0).astype(int)
+        X["execution_dayofyear"] = date.dt.day_of_year.fillna(1).astype(int)
         X["is_empty_workload"] = ((X.total_processes.fillna(0) == 0) | (X.total_gpu_hours == 0)).astype(int)
         X["has_special_requests"] = (X.special_resource_requests > 0).astype(int)
         X["is_domestic"] = (X.client_region == "PRT").astype(int)

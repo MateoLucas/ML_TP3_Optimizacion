@@ -18,7 +18,7 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 * Se eliminaron 2 columnas con **leakage** (`execution_status`, `execution_status_date`) y la evaluación se hizo con **splits agrupados por duplicados** (33 % del dataset son filas idénticas).
 * El **análisis de errores** mostró que el 72 % de los errores del baseline se concentra en una cohorte (`cloud_marketplace` sin compromiso contractual), dominada por falsos negativos. Las **curvas de aprendizaje** mostraron que el sistema estaba limitado por el modelo, no por la cantidad de datos.
 * De las 5 estrategias de optimización, la que más aportó fue **cambiar la familia de modelo** (+0.029 AUC). Le siguen **ajustar el umbral de decisión** (+0.008 F1) y el **tuning de hiperparámetros** (+0.002 AUC). Los ensambles y el resto de las intervenciones data-centered no superaron al modelo final.
-* Función predictora: [`predictor/predictor_v1_Grupo_X.py`](predictor/predictor_v1_Grupo_X.py) (Paso 5.6).
+* Función predictora: [`predictor/predictor_v1_Grupo_12.py`](predictor/predictor_v1_Grupo_12.py), un **único archivo autocontenido** (sólo requiere `numpy` y `pandas`) (Paso 6).
 
 ---
 
@@ -30,6 +30,7 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 - [Paso 3 – Error analysis y enfoque data-centered](#paso-3--error-analysis-y-enfoque-data-centered)
 - [Paso 4 – Optimización del sistema de ML](#paso-4--optimización-del-sistema-de-ml)
 - [Paso 5 – Modelo final y función predictora](#paso-5--modelo-final-y-función-predictora)
+- [Paso 6 – Predictor autocontenido para la entrega](#paso-6--predictor-autocontenido-para-la-entrega)
 
 ---
 
@@ -52,7 +53,7 @@ Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Opt
 ├── reports/figures/                # figuras generadas (se muestran en este README)
 ├── reports/tables/                 # tablas de resultados (.csv y .md)
 ├── models/                         # configuraciones elegidas, OOFs y modelo final serializado
-└── predictor/predictor_v1_Grupo_X.py   # función predictora para entregar
+└── predictor/predictor_v1_Grupo_12.py  # función predictora para entregar (autocontenida)
 ```
 
 **Instalación**
@@ -73,6 +74,7 @@ python steps/04c_hyperparameter_optimization.py # Paso 4.3 (~25 min, reanudable)
 python steps/04d_ensembles.py                   # Paso 4.4 (~8 min)
 python steps/04e_data_centered.py               # Paso 4.5 (~4 min)
 python steps/05_final_model.py                  # Paso 5   (~3 min)
+python steps/06_export_predictor.py             # Paso 6   (~30 s)
 ```
 
 (tiempos con 4 cores). Cada paso lee los resultados del anterior que necesita desde `models/` (`baseline.json`, `feature_selection.json`, `hpo_params.json`, `final_config.json`).
@@ -809,25 +811,52 @@ F1 baseline → final por cohorte, en test:
   * Las cohortes que ya estaban resueltas (`locked_allocation`, `research_consortium`, `managed_account`) apenas cambian. No había margen.
 * La brecha entre la cohorte foco y el resto **se achicó pero no se cerró** (F1 0.74 vs 0.92). Como se anticipó en 3.3–3.4, cerrarla requiere **datos nuevos** (historial del cliente en el marketplace, señales de preparación del workload, dinámica de precios) más que otro modelo.
 
-### 5.6 Función predictora: `predictor_v1_Grupo_X()`
+### 5.6 Modelo entregable
 
-Archivo: [`predictor/predictor_v1_Grupo_X.py`](predictor/predictor_v1_Grupo_X.py). Modelo: `models/final_model.joblib` (1.8 MB, LightGBM final re-entrenado con train + test). Configuración: `models/final_config.json` (incluye el umbral 0.41).
+`models/final_model.joblib` es el pipeline final (FE + encoders + LightGBM + configuración en `models/final_config.json`, con umbral 0.41) **re-entrenado con train + test** (47 842 reservas). Ese pipeline necesita sklearn, lightgbm y las clases de `tp3/` para cargarse. Por eso la función predictora que se entrega se exporta en el Paso 6 como un archivo independiente.
 
-* **Entrada:** ruta a un CSV o un `DataFrame` con las columnas de `gpu_resource_reservations.csv`. `canceled_job`, `execution_status` y `execution_status_date` pueden venir o no: se ignoran.
-* **Salida:** `np.ndarray` de 0/1 (1 = la reserva será cancelada), en el mismo orden que la entrada. Con `return_proba=True` devuelve la probabilidad de cancelación.
-* Aplica internamente la misma limpieza determinística del Paso 1 (`tp3.data.clean`) y el pipeline completo (FE, encoders, modelo), así que recibe los datos crudos.
+---
+
+## Paso 6 – Predictor autocontenido para la entrega
+
+**Script:** `python steps/06_export_predictor.py` (~30 s) → escribe [`predictor/predictor_v1_Grupo_12.py`](predictor/predictor_v1_Grupo_12.py) y `reports/tables/06_verificacion_predictor.*`.
+
+La entrega es **un solo archivo**, `predictor_v1_Grupo_12.py` (~1 MB), con la función `predictor_v1_Grupo_12(X)`:
+
+* **Entrada:** un `DataFrame` con las columnas de `gpu_resource_reservations.csv`. `canceled_job`, `execution_status` y `execution_status_date` pueden venir o no (se ignoran). Las columnas derivadas `total_processes` / `total_gpu_hours` se reconstruyen si faltan.
+* **Salida:** `np.ndarray` de enteros **0/1** (1 = la reserva será cancelada), una predicción por fila, en el mismo orden que `X`.
+* **Dependencias:** sólo `numpy` y `pandas`. No necesita sklearn, lightgbm, pickle, otras carpetas ni archivos, y no re-entrena nada.
 
 ```python
-from predictor.predictor_v1_Grupo_X import predictor_v1_Grupo_X
+import pandas as pd
+from predictor_v1_Grupo_12 import predictor_v1_Grupo_12
 
-y_pred = predictor_v1_Grupo_X("nuevas_reservas.csv")   # array de 0/1
-proba  = predictor_v1_Grupo_X(df, return_proba=True)   # probabilidades
+X = pd.read_csv("gpu_resource_reservations.csv").drop(columns=["canceled_job"])
+y_pred = predictor_v1_Grupo_12(X)      # array de 0/1
 ```
 
-Desde la terminal:
+También se puede correr desde la terminal: `python predictor_v1_Grupo_12.py datos.csv predicciones.csv`.
 
-```bash
-python predictor/predictor_v1_Grupo_X.py nuevas_reservas.csv predicciones.csv
-```
+**Cómo es autocontenido.** El script de exportación toma el pipeline entrenado y escribe dentro del `.py` (bloque `MODEL PAYLOAD`, JSON comprimido con zlib + base64) todos los parámetros aprendidos:
 
-> Antes de enviar, reemplazar la **X** del nombre del archivo y de la función por el número de grupo. El predictor necesita las carpetas `tp3/` y `models/` del repositorio (el modelo serializado usa las clases de `tp3.features`).
+| componente del pipeline | qué se exporta | cómo se aplica en el predictor |
+|:--|:--|:--|
+| limpieza (Paso 1) | – (reglas fijas) | mismo código que `tp3.data.clean` |
+| `FeatureEngineer` | – (fórmulas fijas) | mismas fórmulas que `tp3.features` |
+| `GroupStats` | frecuencias de región / agente / organización y medianas de costo por (GPU, mes) | diccionarios |
+| `SimpleImputer` | medianas de las 22 numéricas | reemplazo de `NaN` |
+| `OneHotEncoder` | categorías y categorías infrecuentes de las 6 categóricas | one-hot con columna `infrequent` (también para categorías nunca vistas) |
+| `TargetEncoder` | codificación de cada país y agente + media global | diccionario (categorías nuevas → media global) |
+| `LGBMClassifier` | los 381 árboles (feature, umbral, hijos, valores de hoja y manejo de faltantes) | recorrido de los árboles en numpy, misma regla que LightGBM (`x <= umbral` → izquierda) |
+| umbral de decisión | 0.41 | `proba >= 0.41` → 1 |
+
+**Verificación** (`06_verificacion_predictor`). El script compara el predictor exportado contra el pipeline original de sklearn/LightGBM:
+
+| caso | filas | máx. diferencia en features | máx. diferencia en probabilidad | predicciones distintas |
+|:--|--:|--:|--:|--:|
+| dataset completo | 47 842 | 0 | 2.2e-16 | **0** |
+| categorías nunca vistas, IDs nuevos y faltantes en numéricas y categóricas | 500 | 0 | 5.6e-17 | **0** |
+| una sola fila | 1 | 0 | 0 | **0** |
+| índice desordenado | 1 000 | 0 | 5.6e-17 | **0** |
+
+Además, se probó en una **carpeta nueva** que contenía sólo `predictor_v1_Grupo_12.py` y un CSV, con dos entornos virtuales limpios sin sklearn ni lightgbm (numpy 2.5 + pandas 3.1, y numpy 2.1 + pandas 2.2). En ambos devolvió un `np.ndarray` int de 0/1 con las mismas 47 842 predicciones, en ~6 s.

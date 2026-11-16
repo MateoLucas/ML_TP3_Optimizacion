@@ -213,10 +213,4 @@ MODEL_DIR.mkdir(exist_ok=True)
 joblib.dump(final_full, MODEL_DIR / "final_model.joblib", compress=3)
 print("modelo guardado:", (MODEL_DIR / "final_model.joblib").stat().st_size / 1e6, "MB")
 
-# sanity check de la función predictora (sobre el CSV crudo)
-from predictor.predictor_v1_Grupo_X import predictor_v1_Grupo_X  # noqa: E402
-
-raw = load_raw()
-pred = predictor_v1_Grupo_X(raw.drop(columns=[TARGET]))
-print("predictor OK:", pred.shape, "tasa predicha:", pred.mean().round(4),
-      "acc. (in-sample, sólo chequeo):", (pred == raw[TARGET].to_numpy()).mean().round(4))
+# El predictor autocontenido para entregar se genera y verifica en steps/06_export_predictor.py

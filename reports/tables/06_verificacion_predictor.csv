@@ -1,0 +1,5 @@
+caso,filas,max |Δ features|,max |Δ proba|,predicciones distintas
+dataset completo,47842,0.0,2.220446049250313e-16,0
+casos borde (categorías nuevas y faltantes),500,0.0,5.551115123125783e-17,0
+una sola fila,1,0.0,0.0,0
+índice desordenado,1000,0.0,5.551115123125783e-17,0
