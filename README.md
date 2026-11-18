@@ -6,6 +6,8 @@
 
 Este README es el informe del trabajo. Sigue el orden de la consigna ([`TP3. Optimización de Modelos de ML..pdf`](TP3.%20Optimizaci%C3%B3n%20de%20Modelos%20de%20ML..pdf)) y funciona también como guía paso a paso: cada sección dice qué script se corrió, qué decisiones se tomaron y por qué, y qué resultados salieron. Cada paso se commiteó por separado, así que el historial de git sigue el mismo orden.
 
+> **Versión corta:** [RESUMEN.md](RESUMEN.md) resume cada paso en una página, con enlaces a las secciones de este informe.
+
 ### Resumen
 
 | | Baseline (Árbol de decisión, depth 8) | **Modelo final** (LightGBM tuneado + FE + umbral 0.41) |
